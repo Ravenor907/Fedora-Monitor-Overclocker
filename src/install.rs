@@ -296,7 +296,8 @@ fn remove_from_path(home: &Path) -> Result<Vec<PathBuf>> {
             continue;
         }
         let stripped = strip_path_block(&text);
-        if shell == "fish" && stripped.trim().is_empty() {
+        // A file that only held our block was created by `install`.
+        if stripped.trim().is_empty() {
             fs::remove_file(&rc).with_context(|| format!("removing {}", rc.display()))?;
         } else {
             fs::write(&rc, stripped).with_context(|| format!("writing {}", rc.display()))?;
@@ -608,6 +609,12 @@ mod tests {
         assert!(text.starts_with("alias ll='ls -l'\n# >>> monitor-oc"));
         assert_eq!(remove_from_path(&home).unwrap(), vec![rc.clone()]);
         assert_eq!(fs::read_to_string(&rc).unwrap(), "alias ll='ls -l'\n");
+
+        // No .bashrc before install: none after uninstall either.
+        fs::remove_file(&rc).unwrap();
+        add_to_path(&home, "/bin/bash").unwrap();
+        remove_from_path(&home).unwrap();
+        assert!(!rc.exists());
 
         add_to_path(&home, "/usr/bin/fish").unwrap();
         let fish = home.join(".config/fish/conf.d/monitor-oc.fish");
