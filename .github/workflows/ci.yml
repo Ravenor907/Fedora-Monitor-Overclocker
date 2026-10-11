@@ -27,10 +27,10 @@ jobs:
       # at runtime.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends luajit desktop-file-utils shellcheck
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo clippy --all-targets --no-default-features -- -D warnings
-      - run: cargo test
-      - run: cargo test --no-default-features
+      - run: .github/scripts/annotate.sh cargo clippy --all-targets --message-format=short -- -D warnings
+      - run: .github/scripts/annotate.sh cargo clippy --all-targets --no-default-features --message-format=short -- -D warnings
+      - run: .github/scripts/annotate.sh cargo test
+      - run: .github/scripts/annotate.sh cargo test --no-default-features
       - run: shellcheck install.sh
       - run: desktop-file-validate packaging/Install-Monitor-OC.desktop
 

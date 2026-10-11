@@ -284,7 +284,6 @@ impl UpdateState {
 /// Where the updater keeps things for one user.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Paths {
-    pub home: PathBuf,
     /// `~/.local/bin/monitor-oc`, the installed program.
     pub binary: PathBuf,
     pub settings: PathBuf,
@@ -317,7 +316,6 @@ impl Paths {
         let share = data_home.map_or_else(|| home.join(".local/share"), Path::to_path_buf);
         let data = share.join("monitor-oc");
         Paths {
-            home: home.to_path_buf(),
             binary: home.join(".local/bin/monitor-oc"),
             settings: config.join("monitor-oc/update.conf"),
             state: data.join("update-state"),
@@ -594,10 +592,10 @@ pub fn rollback(paths: &Paths) -> Result<String> {
         .take()
         .or_else(|| run_version(&paths.previous).ok())
         .unwrap_or_else(|| "the previous version".into());
-    if let Some(bad) = bad.filter(|b| Build::parse(b) != Build::parse(&restored)) {
-        if !state.bad.contains(&bad) {
-            state.bad.push(bad);
-        }
+    if let Some(bad) = bad.filter(|b| Build::parse(b) != Build::parse(&restored))
+        && !state.bad.contains(&bad)
+    {
+        state.bad.push(bad);
     }
     state.installed = Some(restored.clone());
     state.pending = None;
