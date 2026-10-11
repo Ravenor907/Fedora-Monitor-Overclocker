@@ -52,6 +52,8 @@ jobs:
       - name: No C compiler, like SteamOS
         run: "! command -v cc"
       - name: Install as a normal user
+        env:
+          CARGO_TERM_COLOR: never
         run: |
           useradd -m deck
           cp -r "$GITHUB_WORKSPACE" /home/deck/MonitorOC
@@ -59,7 +61,7 @@ jobs:
           # The last lines of a failure become annotations, readable on the PR.
           if ! su deck -c 'mkdir -p ~/Desktop && bash ~/MonitorOC/scripts/install.sh' > install.log 2>&1; then
             cat install.log
-            grep -v '^\s*$' install.log | tail -n 25 | while IFS= read -r line; do echo "::error::$line"; done
+            grep -v '^\s*$' install.log | tail -n 10 | while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           fi
           cat install.log
