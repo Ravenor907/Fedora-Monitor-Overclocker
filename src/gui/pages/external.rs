@@ -7,8 +7,8 @@ use crate::gui::data::Monitor;
 use crate::gui::jobs::{Kind as JobKind, Outcome, TEST_SECONDS};
 use crate::gui::theme::{TOUCH, bold, palette};
 use crate::gui::widgets::{
-    Button, Kind, banner, big_number, button_if, caption, card, chip, dim, facts, faint, picker,
-    segmented, slider, tag, toggle,
+    Button, Kind, big_number, button_if, caption, card, chip, dim, facts, faint, picker, segmented,
+    slider, tag, toggle,
 };
 use crate::plan::{self, Plan};
 use crate::timing::{Mode, Strategy};
