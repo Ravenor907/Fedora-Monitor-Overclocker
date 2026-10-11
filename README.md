@@ -27,7 +27,7 @@ read-only system, so it survives SteamOS updates.
 On SteamOS, switch to Desktop Mode and open **Konsole**. Then paste:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Ravenor907/Fedora-Monitor-Overclocker/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Ravenor907/monitor-oc/main/install.sh | sh
 ```
 
 [`install.sh`](install.sh) downloads the latest release, checks its SHA-256 checksum and runs
@@ -42,13 +42,13 @@ Run it again at any time to update. To install a specific release instead of the
 ### Double-click installer
 
 Like Decky Loader's installer: download
-[Install-Monitor-OC.desktop](https://github.com/Ravenor907/Fedora-Monitor-Overclocker/releases/latest/download/Install-Monitor-OC.desktop)
+[Install-Monitor-OC.desktop](https://github.com/Ravenor907/monitor-oc/releases/latest/download/Install-Monitor-OC.desktop)
 in Desktop Mode, drag it onto the desktop and double-click it. It opens a terminal, runs the same
 one-liner and waits for Enter. If your desktop asks whether to trust or run the file, allow it.
 
 ### Manual download
 
-Download a file from the [Releases](https://github.com/Ravenor907/Fedora-Monitor-Overclocker/releases)
+Download a file from the [Releases](https://github.com/Ravenor907/monitor-oc/releases)
 page, then install it:
 
 ```sh
@@ -293,7 +293,7 @@ monitor-oc uninstall           # the program, menu entry and icon
 monitor-oc uninstall --purge   # also the built-in screen settings and ~/.config/monitor-oc
 ```
 
-or `curl -fsSL https://raw.githubusercontent.com/Ravenor907/Fedora-Monitor-Overclocker/main/install.sh | sh -s -- --uninstall`.
+or `curl -fsSL https://raw.githubusercontent.com/Ravenor907/monitor-oc/main/install.sh | sh -s -- --uninstall`.
 
 - Without `--purge`, a confirmed built-in screen overclock stays active in Game Mode.
 - Overrides for external monitors live outside your home directory, so `uninstall` asks you to

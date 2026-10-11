@@ -3,14 +3,14 @@
 # latest release, checks its SHA-256 and runs `monitor-oc install`, which puts
 # the program in ~/.local/bin and adds "Monitor OC" to the app menu.
 #
-#   curl -fsSL https://raw.githubusercontent.com/Ravenor907/Fedora-Monitor-Overclocker/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Ravenor907/monitor-oc/main/install.sh | sh
 #
 # Uninstall:          ... | sh -s -- --uninstall [--purge]
 # A specific release: ... | MONITOR_OC_VERSION=v0.2.0 sh
 
 set -eu
 
-REPO="Ravenor907/Fedora-Monitor-Overclocker"
+REPO="Ravenor907/monitor-oc"
 ASSET="monitor-oc-x86_64"
 
 say() { printf '%s\n' "$*"; }

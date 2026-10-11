@@ -4,7 +4,7 @@ version = "0.2.0"
 edition = "2024"
 description = "Monitor refresh-rate overclocking via EDID overrides for SteamOS, Fedora and other Linux distros"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/ravenor907/fedora-monitor-overclocker"
+repository = "https://github.com/Ravenor907/monitor-oc"
 rust-version = "1.95"
 
 [features]
