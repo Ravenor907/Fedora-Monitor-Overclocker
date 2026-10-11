@@ -26,15 +26,39 @@
 
 ## Install
 
-On SteamOS, switch to Desktop Mode and open **Konsole**, then paste:
+One time, about 5 minutes, needs an internet connection.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/Ravenor907/monitor-oc/main/install.sh | sh
+**1. Switch to Desktop Mode.** Press the **Steam** button, go to **Power**, then **Switch to Desktop**.
+
+**2. Open Konsole.** Click the app launcher in the bottom-left corner, then **System → Konsole**.
+No keyboard? Press **Steam + X** for the on-screen one.
+
+**3. Paste this and press Enter.** Right-click → **Paste**, or **Ctrl + Shift + V**.
+
+```bash
+(git -C ~/MonitorOC pull || git clone https://github.com/Ravenor907/monitor-oc ~/MonitorOC) && bash ~/MonitorOC/scripts/install.sh
 ```
 
-No `sudo` and nothing on SteamOS's read-only system, so it survives SteamOS updates. It adds
-**Monitor OC** to your app menu. To use it in Game Mode, add it to Steam once: in Desktop Mode open
-Steam, **Games > Add a Non-Steam Game to My Library**, tick **Monitor OC**.
+It's finished when it says **Done!** The first time it sets up a private Rust compiler in your home
+folder and builds Monitor OC (no sudo, nothing on SteamOS's read-only system, so it survives SteamOS
+updates).
+
+**4. Open Monitor OC** from the desktop icon or the app menu. To use it in Game Mode, add it to Steam
+once: in Desktop Mode open Steam, **Games > Add a Non-Steam Game to My Library**, tick **Monitor OC**.
+
+That's it. Monitor OC keeps itself up to date from here on.
+
+<details>
+<summary><b>Troubleshooting</b></summary>
+
+- **"git: command not found"**: [download the ZIP](https://github.com/Ravenor907/monitor-oc/archive/refs/heads/main.zip),
+  extract it into your home folder as `MonitorOC`, open Konsole there and run `bash scripts/install.sh`.
+- **It asks for a password**: the installer never does. Only changes to external monitors need one later.
+- **The build stops with an error**: run the command again (a dropped connection is the usual cause). If it
+  keeps failing, open a [bug report](https://github.com/Ravenor907/monitor-oc/issues/new?template=bug_report.yml)
+  with the last lines it printed.
+
+</details>
 
 ## Use
 
@@ -78,9 +102,14 @@ include the diagnostics and recent activity, with your user and host names taken
 
 ## Uninstall
 
-Press **Uninstall** in Settings, or run `monitor-oc uninstall`. It removes the app, its
-menu entries and settings, and the built-in screen goes back to stock. Remove the Steam shortcut
-too if you added one.
+Press **Uninstall** in Settings, or run this in Konsole:
+
+```bash
+bash ~/MonitorOC/scripts/uninstall.sh
+```
+
+It removes the app, its menu entries, settings and private compiler, and the built-in screen goes back
+to stock. Remove the Steam shortcut too if you added one.
 
 ## More
 

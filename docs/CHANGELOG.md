@@ -20,8 +20,9 @@
 - **Error reports like Ally Hub.** With a GitHub access key in Settings, crashes, failed updates and failed
   tests can be reported automatically, and **Report a problem** sends your own description with the
   diagnostics. Also `monitor-oc report`.
-- Builds are no longer GitHub releases: install.sh and updates download them from the project's site, and
-  Stable or Testing is chosen in the app.
+- **Installed like Ally Hub.** `git clone` and `scripts/install.sh`, which builds Monitor OC on the device
+  with a private compiler (no releases or downloads of prebuilt files); updates download the new source
+  and build it; `scripts/uninstall.sh` removes everything. Stable or Testing is chosen in the app.
 - **Uninstall fixed.** `monitor-oc uninstall` (and the install script's `--uninstall`) now removes everything,
   including the Game Mode profile and settings (`--keep-settings` to keep them), takes care of external
   monitor overrides through a password prompt, and the app has an Uninstall button.

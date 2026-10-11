@@ -25,6 +25,8 @@ pub struct Paths {
     pub desktop: PathBuf,
     pub icon_svg: PathBuf,
     pub icon_png: PathBuf,
+    /// The desktop shortcut scripts/install.sh adds (removed on uninstall).
+    pub shortcut: PathBuf,
 }
 
 impl Paths {
@@ -55,6 +57,7 @@ impl Paths {
             desktop: data.join(format!("applications/{APP_ID}.desktop")),
             icon_svg: icons.join(format!("scalable/apps/{APP_ID}.svg")),
             icon_png: icons.join(format!("256x256/apps/{APP_ID}.png")),
+            shortcut: home.join(format!("Desktop/{APP_ID}.desktop")),
         }
     }
 
@@ -188,6 +191,7 @@ pub fn remove_files(paths: &Paths) -> Result<Vec<PathBuf>> {
         &paths.desktop,
         &paths.icon_svg,
         &paths.icon_png,
+        &paths.shortcut,
     ] {
         if remove_if_present(path)? {
             removed.push(path.to_path_buf());
@@ -602,8 +606,8 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Checks the generated menu entry and the double-click installer with
-    /// desktop-file-validate (from desktop-file-utils).
+    /// Checks the generated menu entry with desktop-file-validate (from
+    /// desktop-file-utils).
     #[test]
     fn desktop_files_validate() {
         if !system::which("desktop-file-validate") {
@@ -618,11 +622,8 @@ mod tests {
         let generated = dir.join(format!("{APP_ID}.desktop"));
         let entry = desktop_entry(Path::new("/home/deck/.local/bin/monitor-oc")).unwrap();
         fs::write(&generated, entry).unwrap();
-        let installer =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/Install-Monitor-OC.desktop");
         let out = Command::new("desktop-file-validate")
             .arg(&generated)
-            .arg(&installer)
             .output()
             .unwrap();
         let _ = fs::remove_dir_all(&dir);
