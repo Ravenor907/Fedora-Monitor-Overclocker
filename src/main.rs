@@ -2,15 +2,19 @@ mod doctor;
 mod drm;
 mod edid;
 mod gamescope;
+#[cfg(feature = "gui")]
+mod gui;
+mod plan;
 mod service;
 mod state;
 mod system;
 mod timing;
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use drm::Connector;
-use edid::{Dtd, Edid, Location};
+use edid::Edid;
+use plan::Plan;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -26,7 +30,7 @@ use timing::{Mode, Strategy};
 #[command(version, propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
-    command: Cmd,
+    command: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -96,6 +100,19 @@ enum Cmd {
     },
     /// Check this system and explain anything that will stop an overclock working.
     Doctor,
+    /// Open the graphical app (also what running monitor-oc without arguments does).
+    #[cfg(feature = "gui")]
+    Gui {
+        /// Show made-up hardware (a ROG Ally X with a 1440p monitor); changes nothing.
+        #[arg(long)]
+        demo: bool,
+        /// Page to open first.
+        #[arg(long, value_enum)]
+        page: Option<gui::Page>,
+        /// Fill the screen (always on in Game Mode).
+        #[arg(long)]
+        fullscreen: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -146,14 +163,6 @@ struct Target {
     force: bool,
 }
 
-struct Plan {
-    edid: Edid,
-    dtd: Dtd,
-    strategy: Strategy,
-    location: Location,
-    limit_changes: Vec<String>,
-}
-
 fn main() {
     if let Err(e) = run(Cli::parse()) {
         eprintln!("error: {e:#}");
@@ -162,7 +171,27 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    match cli.command {
+    let Some(command) = cli.command else {
+        // Launched from a menu or Steam: open the app. From a terminal
+        // without a graphical session: show the commands.
+        #[cfg(feature = "gui")]
+        if gui::display_available() {
+            return gui::run(gui::Options::default());
+        }
+        Cli::command().print_help()?;
+        std::process::exit(2);
+    };
+    match command {
+        #[cfg(feature = "gui")]
+        Cmd::Gui {
+            demo,
+            page,
+            fullscreen,
+        } => gui::run(gui::Options {
+            demo,
+            page,
+            fullscreen,
+        }),
         Cmd::Detect => detect(),
         Cmd::Show { source } => show(&source),
         Cmd::Generate {
@@ -334,17 +363,7 @@ fn save_original(conn: &Connector, edid: &Edid) -> Result<()> {
 }
 
 fn build_plan(base: &Edid, mode: &Mode, opts: &BuildOpts) -> Result<Plan> {
-    let (dtd, strategy) = timing::build(base, mode, opts.timing)?;
-    let mut edid = base.clone();
-    let limit_changes = edid.widen_range_limits(&dtd);
-    let location = edid.add_timing(&dtd, opts.preferred)?;
-    Ok(Plan {
-        edid,
-        dtd,
-        strategy,
-        location,
-        limit_changes,
-    })
+    plan::build(base, mode, opts.timing, opts.preferred)
 }
 
 fn print_plan(mode: &Mode, plan: &Plan, conn: Option<&Connector>) {
@@ -354,23 +373,8 @@ fn print_plan(mode: &Mode, plan: &Plan, conn: Option<&Connector>) {
     for change in &plan.limit_changes {
         println!("Range:      {change}");
     }
-    if matches!(plan.location, Location::DisplayId { .. }) && plan.strategy != Strategy::CvtRb2 {
-        println!(
-            "Note:       stored as a DisplayID timing; if the monitor rejects it, also try --timing cvt-rb2."
-        );
-    }
-    let mhz = plan.dtd.clock_mhz();
-    if conn.is_some_and(|c| c.name.starts_with("HDMI")) && mhz > 600.0 {
-        println!(
-            "Note:       {mhz:.0} MHz is above HDMI 2.0's 600 MHz limit; this only works over HDMI 2.1 (FRL) on both ends."
-        );
-    }
-    if (plan.dtd.refresh_hz() - mode.hz).abs() > 0.05 {
-        println!(
-            "Note:       the EDID's 10 kHz clock step gives {:.3} Hz instead of exactly {}.",
-            plan.dtd.refresh_hz(),
-            mode.hz
-        );
+    for note in plan.notes(mode, conn.map(|c| c.name.as_str())) {
+        println!("Note:       {note}");
     }
 }
 

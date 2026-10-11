@@ -19,6 +19,7 @@ jobs:
           components: clippy, rustfmt
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --no-default-features -- -D warnings
       - run: cargo test
 
   build:
@@ -30,7 +31,9 @@ jobs:
         with:
           targets: x86_64-unknown-linux-musl
       # Static binary: runs unchanged on SteamOS, Fedora, Bazzite, Arch, Ubuntu...
-      - run: cargo build --release --target x86_64-unknown-linux-musl
+      # CLI only: the GUI loads X11/Wayland/OpenGL at runtime, which a static
+      # musl binary cannot do.
+      - run: cargo build --release --no-default-features --target x86_64-unknown-linux-musl
       - run: cp target/x86_64-unknown-linux-musl/release/monitor-oc monitor-oc-x86_64
       - uses: actions/upload-artifact@v4
         with:

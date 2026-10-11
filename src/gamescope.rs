@@ -349,6 +349,30 @@ impl Report {
             .ok()
             .map(|t| Report::parse(&t))
     }
+
+    /// True when monitor-oc's settings changed after Gamescope last loaded
+    /// them, so Game Mode has to restart to pick them up.
+    pub fn is_stale(&self, paths: &Paths) -> bool {
+        let changed = modified_secs(&paths.state).max(modified_secs(&paths.script));
+        matches!((self.loaded_at, changed), (Some(loaded), Some(changed)) if changed > loaded)
+            && !self.serves(&State::load(paths))
+    }
+
+    /// True when this session already runs what `state` asks for, as after
+    /// confirming the trial it was started with.
+    pub fn serves(&self, state: &State) -> bool {
+        state.trial.is_none() && state.max > 0 && self.extended && self.limit == state.max
+    }
+}
+
+fn modified_secs(path: &Path) -> Option<u64> {
+    fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
 }
 
 fn write_file(path: &Path, text: &str) -> Result<()> {
@@ -502,6 +526,26 @@ mod tests {
         );
         assert_eq!(r.last_clock_khz, Some(301234));
         assert_eq!(Report::parse("base=none\n").base, None);
+    }
+
+    #[test]
+    fn confirming_the_running_trial_needs_no_restart() {
+        let report = Report {
+            extended: true,
+            limit: 135,
+            ..Report::default()
+        };
+        let kept = State {
+            max: 135,
+            ..State::default()
+        };
+        assert!(report.serves(&kept));
+        let new_trial = State {
+            trial: Some((140, TrialState::Armed)),
+            ..kept.clone()
+        };
+        assert!(!report.serves(&new_trial));
+        assert!(!report.serves(&State::default()));
     }
 
     #[test]

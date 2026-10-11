@@ -72,6 +72,26 @@ Other commands:
 - `sudo monitor-oc apply ... --dry-run` prints exactly what would change.
 - `sudo monitor-oc reset DP-1` drops a live override (for example after interrupting `test` with Ctrl-C).
 
+### Graphical app
+
+Run `monitor-oc` without arguments (or `monitor-oc gui`) in Desktop Mode or Game Mode to open the app:
+
+- **Built-in screen**: raise the refresh limit Game Mode offers on a handheld's own screen (ROG Ally / Ally X,
+  Steam Deck, Legion Go, ...). Start a trial, switch to Game Mode, pick the rate in Quick Access >
+  Performance, then come back and keep it. No password needed. If the screen goes black, hold the power
+  button: the trial turns itself off on the next start.
+- **External monitors**: pick a mode and see the exact timing and EDID change before anything is written.
+  *Test live* reverts by itself after 20 s unless you keep it; *Apply* installs it for every boot. Both ask for
+  your password through polkit, so they need Desktop Mode.
+- **Verify**: measures the refresh rate the window is really shown at, counts skipped frames, and has
+  motion and frame-skipping tests.
+- **Diagnostics**: `monitor-oc doctor` with a *Copy report* button.
+
+In Game Mode (add monitor-oc to Steam as a non-Steam game) it opens full screen with larger controls. It
+works with a controller mapped to keys: D-pad/arrows move, A/Enter presses, Tab cycles, F1-F4 or
+Ctrl+Tab switch pages, Ctrl +/- change the size. `monitor-oc gui --demo` shows it with made-up hardware and
+changes nothing.
+
 ### Choosing timings (`--timing`)
 
 - `auto` (default) uses `native` if the monitor already has a mode at that resolution, otherwise `cvt-rb2`.
@@ -119,8 +139,12 @@ The override only affects the connector it was applied to. If a mode doesn't wor
 
 ```sh
 cargo test
-cargo build --release --target x86_64-unknown-linux-musl   # static binary
+cargo build --release                                                          # CLI + graphical app
+cargo build --release --no-default-features --target x86_64-unknown-linux-musl # static CLI-only binary
 ```
+
+The graphical app (the default `gui` feature) uses egui with OpenGL and loads X11, Wayland and OpenGL at
+runtime, so the binary links nothing beyond glibc and builds without extra development packages.
 
 ## License
 

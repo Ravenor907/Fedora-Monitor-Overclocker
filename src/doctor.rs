@@ -6,7 +6,6 @@ use crate::state;
 use crate::system::{self, Boot, Os};
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -47,16 +46,6 @@ pub fn ago(then: u64) -> String {
         3600..=86399 => format!("{} h ago", secs / 3600),
         _ => format!("{} days ago", secs / 86400),
     }
-}
-
-fn modified_secs(path: &Path) -> Option<u64> {
-    fs::metadata(path)
-        .ok()?
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_secs())
 }
 
 pub fn checks() -> Vec<Check> {
@@ -217,13 +206,7 @@ fn panel_checks(out: &mut Vec<Check>) {
             "Gamescope has not loaded monitor-oc's profile yet; switch to Game Mode",
         )),
         Some(r) => {
-            let stale = match (
-                r.loaded_at,
-                modified_secs(&paths.state).max(modified_secs(&paths.script)),
-            ) {
-                (Some(loaded), Some(changed)) => changed > loaded,
-                _ => false,
-            };
+            let stale = r.is_stale(&paths);
             let when = r
                 .loaded_at
                 .map(ago)
