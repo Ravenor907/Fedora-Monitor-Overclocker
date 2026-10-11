@@ -57,7 +57,7 @@ impl Kind {
 /// What [`queue`] did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Queued {
-    Queued(PathBuf),
+    Saved(PathBuf),
     /// Automatic reports are off.
     Off,
     NoKey,
@@ -71,7 +71,7 @@ impl Queued {
     /// Plain words for the user when a report wasn't queued.
     pub fn hint(&self) -> &'static str {
         match self {
-            Queued::Queued(_) => "",
+            Queued::Saved(_) => "",
             Queued::Off => {
                 "Turn on error reports (Settings) to have problems like this fixed automatically."
             }
@@ -390,7 +390,7 @@ pub fn queue(
                 "report",
                 &format!("queued {}: {}", kind.name(), report.title),
             );
-            Queued::Queued(path)
+            Queued::Saved(path)
         }
         Err(_) => Queued::Off,
     }
@@ -433,7 +433,7 @@ pub fn auto(kind: Kind, title: &str, details: &str) -> Queued {
         return Queued::Off;
     };
     let q = queue(&paths, kind, title, details, None, false);
-    if matches!(q, Queued::Queued(_)) {
+    if matches!(q, Queued::Saved(_)) {
         send_in_background();
     }
     q
@@ -716,7 +716,7 @@ pub fn command(message: &[String], set_key: bool, remove: bool) -> Result<()> {
     }
     if !message.is_empty() {
         match user_report(&paths, &message.join(" "), "") {
-            Queued::Queued(_) => println!("Report saved."),
+            Queued::Saved(_) => println!("Report saved."),
             other => bail!("{}", other.hint()),
         }
     }
@@ -789,7 +789,7 @@ mod tests {
         p.save_settings(&s).unwrap();
         assert!(matches!(
             queue(&p, Kind::Crash, "t", "d", None, false),
-            Queued::Queued(_)
+            Queued::Saved(_)
         ));
         // The same problem waiting already: not again.
         assert_eq!(

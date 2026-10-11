@@ -278,8 +278,8 @@ impl Updates {
                 Msg::Reported(q, sent) => {
                     self.reporting = false;
                     self.toasts.push(match q {
-                        Queued::Queued(_) if sent > 0 => (true, "Report sent. Thanks!".to_string()),
-                        Queued::Queued(_) => (
+                        Queued::Saved(_) if sent > 0 => (true, "Report sent. Thanks!".to_string()),
+                        Queued::Saved(_) => (
                             true,
                             "Report saved; it goes out as soon as GitHub can be reached.".into(),
                         ),
@@ -397,7 +397,7 @@ impl Updates {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         let _ = thread::Builder::new().name("report".into()).spawn(move || {
             let q = report::user_report(&paths, &text, &page);
-            let sent = if matches!(q, Queued::Queued(_)) {
+            let sent = if matches!(q, Queued::Saved(_)) {
                 report::upload(&paths).0
             } else {
                 0
