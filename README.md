@@ -217,6 +217,28 @@ affects Desktop Mode.
   when you hit cable or port bandwidth limits.
 - `cvt-rb` uses VESA reduced blanking v1, which is the most widely accepted.
 
+## Updates and test builds
+
+Monitor OC updates itself from the **Updates** page (or `monitor-oc update` in a terminal). By default it
+installs new versions when it starts; turn that off on the Updates page to install by hand.
+
+There are two channels:
+
+- **Stable** (default): releases that have been run and signed off. This is also what install.sh installs.
+- **Testing**: test builds with new fixes and features first, numbered as the Stable version plus a revision
+  (0.2.0.1, 0.2.0.2, ...). They can have bugs. Switch on the Updates page or with
+  `monitor-oc update --channel testing`; go back with `--channel stable`.
+
+Every update keeps the version it replaces, so you can always go back: **Roll back** on the Updates page, or
+`monitor-oc update --rollback`. A new build that fails to start three times in a row rolls itself back. On
+the Testing channel, **Monitor OC Testing Rescue** in the app menu (Desktop Mode) rolls back, returns to
+Stable or uninstalls, even when a test build won't open.
+
+### Controller
+
+In Game Mode the app works with the controller, no Steam Input layout needed: D-pad or left stick to move,
+**A** to press, **B** to close a dialog, **LB/RB** to switch pages. The touchscreen works too.
+
 ## Verify it works
 
 A screen can accept a faster signal and still not show more frames. Check two things:

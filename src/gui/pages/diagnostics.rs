@@ -83,7 +83,7 @@ pub fn report(view: &View) -> String {
     let snap = view.snap;
     let mut out = format!(
         "monitor-oc {}{}\nSession: {}\n",
-        env!("CARGO_PKG_VERSION"),
+        crate::update::label(),
         if view.demo { " (demo data)" } else { "" },
         if view.game_mode {
             "Game Mode"

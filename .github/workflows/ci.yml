@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, testing]
     tags: ["v*"]
   pull_request:
 
@@ -105,8 +105,26 @@ jobs:
           path: dist
           merge-multiple: true
       - run: ls -l dist
+      # v0.2.1 is a Stable release; v0.2.1.3 (four parts) is a test build,
+      # published as a pre-release so releases/latest and install.sh skip it.
+      - name: Check the tag against VERSION
+        id: kind
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          tag=${GITHUB_REF_NAME#v}
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag v$tag does not match VERSION ($version)"
+            exit 1
+          fi
+          case $version in
+            *.*.*.*) echo "prerelease=true" >> "$GITHUB_OUTPUT"; echo "name=$version (testing)" >> "$GITHUB_OUTPUT" ;;
+            *) echo "prerelease=false" >> "$GITHUB_OUTPUT"; echo "name=$version" >> "$GITHUB_OUTPUT" ;;
+          esac
       - uses: softprops/action-gh-release@v2
         with:
+          name: ${{ steps.kind.outputs.name }}
+          prerelease: ${{ steps.kind.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.kind.outputs.prerelease == 'true' && 'false' || 'true' }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |

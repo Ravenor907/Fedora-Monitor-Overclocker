@@ -105,7 +105,7 @@ StartupWMClass={APP_ID}
 
 /// One `Exec` argument, quoted as the Desktop Entry spec requires, plus the
 /// backslash escaping that applies to every value.
-fn exec_arg(arg: &str) -> String {
+pub(crate) fn exec_arg(arg: &str) -> String {
     const RESERVED: &[char] = &[
         ' ', '\t', '\n', '"', '\'', '\\', '>', '<', '~', '|', '&', ';', '$', '*', '?', '#', '(',
         ')', '`',
@@ -323,7 +323,7 @@ pub fn install() -> Result<()> {
     println!(
         "{} monitor-oc {}:",
         if upgrade { "Updated" } else { "Installed" },
-        env!("CARGO_PKG_VERSION")
+        crate::update::label()
     );
     println!("  {}", paths.show(&paths.binary));
     if menu {
@@ -397,6 +397,10 @@ pub fn uninstall(purge: bool) -> Result<()> {
     }
 
     let mut removed = remove_files(&paths)?;
+    // The kept build, the Testing Rescue entry and the update state.
+    removed.extend(crate::update::remove_all(
+        &crate::update::Paths::for_current_user()?,
+    )?);
     let path_files = remove_from_path(&paths.home)?;
     refresh_menus(&paths);
     let screen = gamescope::Paths::for_current_user()?;

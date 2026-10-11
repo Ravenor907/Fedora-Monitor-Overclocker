@@ -4,12 +4,15 @@
 use super::Page;
 use super::data::{Backend, Event, PanelAction, Snapshot, Source};
 use super::demo::World;
+use super::gamepad::Gamepad;
 use super::jobs::{self, Job, Kind as JobKind, Outcome, TEST_SECONDS};
 use super::pages::{Action, Dialog, View, builtin, diagnostics, external, verify};
 use super::prefs::{self, Prefs};
 use super::theme::{self, bold, font, palette, tint};
+use super::updates::{self, UpdateAction, Updates};
 use super::widgets::{self, Button, Icon, Kind, caption, chip, dim, faint, nav_item, tag};
 use crate::gamescope::TrialState;
+use crate::update::{self, Channel};
 use eframe::egui::{
     self, Align, CentralPanel, Color32, Frame, Id, Key, Layout, Margin, Modifiers, Panel, RichText,
     ScrollArea, Shape, Stroke, Theme, Ui, ViewportCommand, pos2, vec2,
@@ -60,6 +63,12 @@ pub struct App {
     builtin: builtin::State,
     external: external::State,
     verify: verify::State,
+    updates: Updates,
+    /// Controller input, in Game Mode (or with MONITOR_OC_GAMEPAD=1).
+    pad: Option<Gamepad>,
+    started: Instant,
+    /// A fresh build was told it works (see `update::mark_healthy`).
+    healthy: bool,
 }
 
 impl App {
@@ -81,7 +90,13 @@ impl App {
         };
         let (backend, events) = Backend::new(source, ctx.clone());
         backend.refresh();
+        let pad = (setup.game_mode || std::env::var("MONITOR_OC_GAMEPAD").is_ok_and(|v| v == "1"))
+            .then(|| Gamepad::start(ctx));
         App {
+            updates: Updates::new(ctx, setup.demo),
+            pad,
+            started: Instant::now(),
+            healthy: setup.demo,
             backend,
             events,
             snap: None,
@@ -114,6 +129,7 @@ impl App {
             (Page::External, Icon::Monitor, "External monitors"),
             (Page::Verify, Icon::Stopwatch, "Verify"),
             (Page::Diagnostics, Icon::Pulse, "Diagnostics"),
+            (Page::Updates, Icon::Update, "Updates"),
         ]);
         pages
     }
@@ -211,6 +227,7 @@ impl App {
                 ctx.copy_text(text);
                 self.toast(true, "Copied to the clipboard.");
             }
+            Action::Update(action) => self.updates.act(action),
             Action::Refresh => {
                 self.backend.refresh();
                 self.last_scan = Instant::now();
@@ -222,7 +239,7 @@ impl App {
         let scale = (scale * 20.0).round() / 20.0;
         let scale = scale.clamp(prefs::MIN_SCALE, prefs::MAX_SCALE);
         self.scale = Some(scale);
-        ctx.set_zoom_factor(scale);
+        self.apply_zoom(ctx, scale);
         self.prefs.scale = Some(scale);
         self.save_prefs();
     }
@@ -266,8 +283,20 @@ impl App {
             prefs::default_scale(self.setup.game_mode, monitor.map(|m| m.y * ppp))
         });
         self.scale = Some(scale);
-        ctx.set_zoom_factor(scale);
+        self.apply_zoom(ctx, scale);
         ctx.request_repaint();
+    }
+
+    /// `scale` is in physical pixels per point. In Game Mode Gamescope shows
+    /// the window 1:1, so any display scale the toolkit reports there (X11
+    /// is pinned to 1 in `gui::run`; this covers Wayland) is cancelled out.
+    fn apply_zoom(&self, ctx: &egui::Context, scale: f32) {
+        let native = if self.setup.game_mode {
+            ctx.native_pixels_per_point().unwrap_or(1.0).max(0.25)
+        } else {
+            1.0
+        };
+        ctx.set_zoom_factor(scale / native);
     }
 
     fn go(&mut self, page: Page) {
@@ -335,6 +364,12 @@ impl App {
             ui.label(RichText::new("monitor-oc").font(bold(20.0)).color(p.text));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
+                if let Some(badge) = self.updates.badge() {
+                    chip(ui, badge, p.good);
+                }
+                if update::is_test_build(update::version()) {
+                    chip(ui, "Test build", p.warn);
+                }
                 if self.setup.game_mode {
                     chip(ui, "Game Mode", p.accent);
                 } else {
@@ -367,7 +402,7 @@ impl App {
             ui.spacing_mut().item_spacing.y = 8.0;
             ui.add_space(4.0);
             ui.label(
-                RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                RichText::new(format!("v{}", update::label()))
                     .font(font(12.0))
                     .color(p.text_faint),
             );
@@ -414,6 +449,14 @@ impl App {
                 self.save_prefs();
             }
             caption(ui, "Theme", p.text_faint);
+            if self.pad.as_ref().is_some_and(Gamepad::connected) {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("A select  ·  B back  ·  LB/RB pages")
+                        .font(font(13.0))
+                        .color(p.text_faint),
+                );
+            }
         });
     }
 
@@ -426,6 +469,10 @@ impl App {
             ui.add_space(pad);
             ui.allocate_ui_with_layout(vec2(content_w, 0.0), Layout::top_down(Align::Min), |ui| {
                 ui.set_width(content_w);
+                if self.page == Page::Updates {
+                    updates::show(ui, &self.updates, out);
+                    return;
+                }
                 let Some(snap) = &self.snap else {
                     ui.add_space(120.0);
                     ui.vertical_centered(|ui| {
@@ -446,6 +493,7 @@ impl App {
                     Page::External => external::show(ui, &mut self.external, &view, out),
                     Page::Verify => verify::show(ui, &mut self.verify, &view),
                     Page::Diagnostics => diagnostics::show(ui, &view, out),
+                    Page::Updates => {}
                 }
             });
         });
@@ -526,6 +574,15 @@ impl App {
                         "Drop it…".into(),
                         Kind::Danger,
                     ),
+                    Dialog::Testing => (
+                        "Switch to test builds?".into(),
+                        update::TESTING_DISCLAIMER
+                            .iter()
+                            .map(|l| l.to_string())
+                            .collect(),
+                        "Use test builds".into(),
+                        Kind::Primary,
+                    ),
                     Dialog::Remove(kind) => (
                         match kind {
                             JobKind::Remove { connector } => {
@@ -572,6 +629,9 @@ impl App {
                     Some(Dialog::RemoveProfile) => out.push(Action::Panel(PanelAction::Remove)),
                     Some(Dialog::Apply { kind, .. }) | Some(Dialog::Remove(kind)) => {
                         out.push(Action::Run(kind))
+                    }
+                    Some(Dialog::Testing) => {
+                        out.push(Action::Update(UpdateAction::Channel(Channel::Testing)))
                     }
                     None => {}
                 }
@@ -718,9 +778,27 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if let Some(pad) = &mut self.pad {
+            pad.feed(ctx, raw_input);
+        }
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.pump();
+        self.updates.pump();
+        for (ok, text) in self.updates.take_toasts() {
+            self.toast(ok, text);
+        }
+        if !self.healthy && self.started.elapsed().as_secs() >= update::HEALTHY_AFTER_SECS {
+            self.healthy = true;
+            if let Ok(paths) = update::Paths::for_current_user() {
+                update::mark_healthy(&paths);
+            }
+        } else if !self.healthy {
+            ctx.request_repaint_after(Duration::from_secs(1));
+        }
         self.screen_setup(&ctx);
         self.shortcuts(&ctx);
         if self.page != Page::Verify && self.last_scan.elapsed() >= SCAN_EVERY {

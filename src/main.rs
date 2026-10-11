@@ -10,6 +10,7 @@ mod service;
 mod state;
 mod system;
 mod timing;
+mod update;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand};
@@ -28,7 +29,7 @@ use timing::{Mode, Strategy};
 /// Works by giving the kernel a modified copy of the monitor's EDID with an
 /// extra (faster) timing, so every desktop and Gamescope sees the new mode.
 #[derive(Parser)]
-#[command(version, propagate_version = true)]
+#[command(version = update::version(), propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Cmd>,
@@ -117,6 +118,22 @@ enum Cmd {
     /// Install Monitor OC for your user: ~/.local/bin/monitor-oc and an app menu
     /// entry (which Steam can add for Game Mode). Re-run to upgrade. No sudo.
     Install,
+    /// Update Monitor OC, switch between Stable and Testing, or roll back.
+    ///
+    /// Stable gets the releases the owner has signed off on. Testing gets
+    /// test builds first (Stable's version plus a revision, e.g. 0.2.0.1).
+    /// Every update keeps the version it replaces for --rollback.
+    Update {
+        /// Only report whether an update is available.
+        #[arg(long)]
+        check: bool,
+        /// Switch to this channel first: stable or testing.
+        #[arg(long, value_enum)]
+        channel: Option<update::Channel>,
+        /// Go back to the version the last update replaced.
+        #[arg(long, conflicts_with_all = ["check", "channel"])]
+        rollback: bool,
+    },
     /// Remove what `install` added.
     Uninstall {
         /// Also delete the built-in screen settings and ~/.config/monitor-oc.
@@ -250,6 +267,11 @@ fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Update {
+            check,
+            channel,
+            rollback,
+        } => update::command(check, channel, rollback),
         Cmd::Install => install::install(),
         Cmd::Uninstall { purge } => install::uninstall(purge),
     }

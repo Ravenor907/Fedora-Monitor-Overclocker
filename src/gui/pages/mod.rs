@@ -27,6 +27,7 @@ pub enum Action {
     Run(Kind),
     Copy(String),
     Refresh,
+    Update(crate::gui::updates::UpdateAction),
 }
 
 /// Changes that need a second, deliberate "yes".
@@ -34,8 +35,13 @@ pub enum Dialog {
     GameMode,
     ResetPanel,
     RemoveProfile,
-    Apply { kind: Kind, summary: Vec<String> },
+    Apply {
+        kind: Kind,
+        summary: Vec<String>,
+    },
     Remove(Kind),
+    /// Switch the update channel to Testing.
+    Testing,
 }
 
 pub fn header(ui: &mut Ui, title: &str, subtitle: &str) {
