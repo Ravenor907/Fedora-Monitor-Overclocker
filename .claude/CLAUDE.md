@@ -11,34 +11,37 @@ Use "the owner" or his GitHub handle, Ravenor907.
 ## Building and checking
 
 CI (`.github/workflows/ci.yml`) is the gate: `cargo fmt --check`, clippy with `-D warnings` for both feature
-sets, `cargo test` for both, shellcheck on install.sh, desktop-file-validate. All must pass before anything is
-merged into `testing` or `main`. Keep the static CLI build free of new dependencies (updates use `curl` and
+sets, `cargo test` for both, shellcheck on `scripts/`, and the `install` job (Arch container without a C
+compiler, like SteamOS: clone, `scripts/install.sh`, `scripts/uninstall.sh`). All must pass before anything
+is merged into `main`. Keep the static CLI build free of new dependencies (updates use `curl` and
 `sha256sum` through `std::process`, controller input reads `/dev/input` with `std` only).
 
-## One branch, channels inside the app (the owner's call, like Ally Hub)
+## Install, updates and channels (the owner's call: exactly like Ally Hub)
 
-- **`main` is the only branch.** Work happens on short-lived PR branches that are merged into `main` and
-  deleted. No `testing` branch, no `dist` branch, no GitHub releases, tags or packages.
-- **Channels live in the app** (Settings: Stable / Testing, `~/.config/monitor-oc/update.conf`). Stable
-  devices install `stable/`, Testing devices whichever of `stable/` and `testing/` is higher. See
-  `src/update.rs`.
-- **Two numbers.** `Cargo.toml`'s version is x.y.z. The `VERSION` file is the build: Cargo's plus a revision
-  for test builds (Cargo 0.2.0 -> 0.2.0.1, 0.2.0.2, ...), equal to Cargo's for a Stable build. A test enforces
-  that VERSION starts with Cargo's version. `--version`, the app and reports show VERSION, with "(testing)".
+- **Installed from source, like Ally Hub.** `git clone` into `~/MonitorOC`, then `scripts/install.sh`, which
+  runs `scripts/build.sh`: a private Rust compiler in `~/.local/share/monitor-oc/toolchain` (rustup, plus
+  cargo-zigbuild/Zig from PyPI in a private venv because SteamOS has no C linker), then `monitor-oc install`
+  and a desktop shortcut. `scripts/uninstall.sh` removes everything. No GitHub releases, tags, packages,
+  Pages or prebuilt binaries, ever. Keep the repo layout: code in `src/`, scripts in `scripts/`, docs in
+  `docs/`.
+- **`main` is the only branch.** Work happens on short-lived PR branches merged into `main` and deleted.
+- **Channels live in the app** (Settings: Stable / Testing). `VERSION` on main is the newest build. `STABLE`
+  on main holds the shipped Stable version and the commit it was built from (`0.3.0 <40-hex sha>`). Stable
+  devices follow `STABLE`; Testing devices take the higher of `STABLE` and `VERSION`. Updates download the
+  source tarball of that ref, build it with its own `scripts/build.sh` and install it (`src/update.rs`).
+- **Two numbers.** `Cargo.toml`'s version is x.y.z. `VERSION` is the build: Cargo's plus a revision for test
+  builds (0.2.0 -> 0.2.0.1, 0.2.0.2, ...), equal to Cargo's for a Stable build. A test enforces that VERSION
+  starts with Cargo's version. `--version`, the app and reports show VERSION, with "(testing)".
 - **At most 10 test revisions per cycle** (`MAX_TEST_REVISIONS`, enforced by a test). Keep each cycle focused.
-- **Publishing (CI `publish` job, GitHub Pages, `update::SITE`):** every push to `main` that passes CI goes to
-  `testing/` on the site. Only a Stable VERSION (x.y.z) also goes to `stable/`; for test builds CI carries
-  the live Stable build over unchanged. Never commit binaries to the repository.
 - **Releasing a test build:** bump the revision in VERSION, add a `docs/CHANGELOG.md` entry, merge the PR
-  into `main` once CI is green.
-- **Only the owner ships.** A Stable VERSION (x.y.z) reaches `main` only when the owner says to ship that
-  build, in his own words. No scheduled ships. Every change, fixes included, goes out as a test build first;
-  say it's ready and wait. Stable only ever gets builds the owner has run on his own device.
+  into `main` once CI is green (CI's `install` job builds and installs it the SteamOS way).
+- **Only the owner ships.** Stable changes only when the owner says to ship that build, in his own words.
+  No scheduled ships. Every change, fixes included, goes out as a test build first; say it's ready and wait.
 - **Shipping ("ship it"):** set `Cargo.toml` to the next x.y.z (patch for fixes, minor for real features),
-  VERSION to the same, `Cargo.lock`'s monitor-oc version, changelog heading; merge. The next test build is
-  x.y.z.1.
-- Leaving Testing: Settings offers "Go back to Stable x.y.z" (`update::install` of an older build);
-  `monitor-oc update --channel stable` does the same.
+  VERSION to the same, `Cargo.lock`'s monitor-oc version, the changelog heading; merge; then write `STABLE`
+  with that version and the merge commit's sha and merge that too. The next test build is x.y.z.1.
+- Leaving Testing: Settings offers "Go back to Stable x.y.z"; `monitor-oc update --channel stable` does
+  the same. The Testing Rescue builds the `STABLE` commit with plain shell.
 
 ## Error reports (same as Ally Hub)
 
@@ -70,8 +73,8 @@ its comments first: the comments carry the "happened again" reports and the acti
 - **Testing Rescue:** on the Testing channel a plain-shell script and menu entry ("Monitor OC Testing Rescue")
   can roll back, go back to Stable or uninstall without running any app code. Keep it working when the
   binary is broken.
-- Downloads come from `update::SITE` with the `.sha256` checked and the expected `--version` before
-  anything is replaced. Never change the update source, folder or asset names.
+- Updates come only from `update::REPO` (raw `VERSION`/`STABLE`, codeload tarballs); the built program
+  must report the expected `--version` before anything is replaced. Never change the update source.
 - Overclock safety: during a built-in screen trial the Lua profile holds every untested rate at stock;
   the app unlocks one (`live`, `live_until`, `live_pid` in the state file) for `live::CONFIRM_SECS` (10 s),
   then after the first keep until the double check at `live::RECHECK_SECS` (5 min). No answer reverts.

@@ -1,25 +1,21 @@
 //! Updates with a Stable and a Testing channel, the same way Ally Hub does it.
 //!
-//! * One branch, `main`. Its `VERSION` decides the channel: a test build
-//!   (x.y.z.N) only reaches **Testing**; a Stable version (x.y.z, only when
-//!   the owner ships) reaches both. There are no releases, packages or extra
-//!   branches: CI publishes each passing push to the project's GitHub Pages
-//!   site, in `testing/` and (Stable versions only) `stable/`, each with the
-//!   binary, its `.sha256` and `VERSION`. The previous Stable build is carried
-//!   over until the next one ships.
+//! * Monitor OC is installed from the repository: `git clone`, then
+//!   `scripts/install.sh`, which builds it on the device with a private Rust
+//!   compiler in `~/.local/share/monitor-oc/toolchain` (like Ally Hub's
+//!   Python environment). No releases, packages or prebuilt binaries.
+//! * One branch, `main`. Its `VERSION` is the newest build: a test build
+//!   (x.y.z.N) or a Stable version (x.y.z). `STABLE` on main names the shipped
+//!   Stable version and the commit it was built from (only the owner ships).
+//! * Stable devices follow `STABLE`; Testing devices take whichever of
+//!   `STABLE` and main's `VERSION` is higher. An update downloads that
+//!   source from GitHub, builds it with `scripts/build.sh` and installs it.
 //! * A test build is the Stable version plus a revision: Stable 0.2.0, then
-//!   testing 0.2.0.1, 0.2.0.2, ... (at most [`MAX_TEST_REVISIONS`]). When the
-//!   owner ships, Stable gets the next x.y.z and testing restarts at its .1.
-//! * install.sh installs `stable/` (or `testing/` while nothing has shipped).
-//!   Stable devices only look there; devices on Testing take whichever of
-//!   `stable/` and `testing/` has the higher build.
+//!   testing 0.2.0.1, 0.2.0.2, ... (at most [`MAX_TEST_REVISIONS`]).
 //! * Every install keeps the binary it replaces, so a bad build can be rolled
 //!   back: from the app, with `monitor-oc update --rollback`, from the Testing
 //!   Rescue menu entry (plain shell, works when the app won't start), or on
 //!   its own when a new build fails to start [`MAX_FAILED_STARTS`] times.
-//!
-//! Downloads go through `curl` and checksums through `sha256sum`, which every
-//! supported system has, so the static CLI build needs no TLS library.
 
 use crate::install;
 use anyhow::{Context, Result, bail};
@@ -130,14 +126,6 @@ impl Channel {
         match self {
             Channel::Stable => "stable",
             Channel::Testing => "testing",
-        }
-    }
-
-    /// Folders on the site whose builds this channel installs.
-    fn dirs(self) -> &'static [&'static str] {
-        match self {
-            Channel::Stable => &["stable"],
-            Channel::Testing => &["stable", "testing"],
         }
     }
 }
@@ -387,15 +375,13 @@ fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     result.with_context(|| format!("writing {}", path.display()))
 }
 
-/// The file this build updates from.
-pub const ASSET: &str = "monitor-oc-x86_64";
-/// Where CI publishes the builds (GitHub Pages, no branch involved).
-pub const SITE: &str = "https://ravenor907.github.io/Monitor-OC";
+/// Where everything comes from: the repository itself, like Ally Hub.
+fn raw_url(git_ref: &str, file: &str) -> String {
+    format!("https://raw.githubusercontent.com/{REPO}/{git_ref}/{file}")
+}
 
-/// A file of the published `dir` (`stable` or `testing`). The query string
-/// skips Pages' cache, so a version and its binary always match.
-fn site_url(dir: &str, file: &str) -> String {
-    format!("{SITE}/{dir}/{file}?t={}", crate::gamescope::now_secs())
+fn tarball_url(git_ref: &str) -> String {
+    format!("https://codeload.github.com/{REPO}/tar.gz/{git_ref}")
 }
 
 /// curl's exit code for an HTTP error such as 404 with `--fail`.
@@ -425,25 +411,28 @@ fn curl(args: &[&str]) -> Result<Fetch> {
     )
 }
 
-/// Where a build can be downloaded from.
+fn fetch_text(url: &str) -> Result<Option<String>> {
+    Ok(match curl(&["--max-time", "30", url])? {
+        Fetch::Ok(body) => Some(String::from_utf8_lossy(&body).into_owned()),
+        Fetch::NotFound => None,
+    })
+}
+
+/// A build and the source it is built from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
     pub build: Build,
-    /// `stable` or `testing` on the site.
-    pub dir: &'static str,
+    /// `main`, or the commit Stable was shipped from.
+    pub git_ref: String,
 }
 
-/// The build published in `dir`, or None while there is none.
-fn published(dir: &'static str) -> Result<Option<Target>> {
-    match curl(&["--max-time", "30", &site_url(dir, "VERSION")])? {
-        Fetch::NotFound => Ok(None),
-        Fetch::Ok(body) => {
-            let text = String::from_utf8_lossy(&body);
-            let build = Build::parse(&text)
-                .with_context(|| format!("the published {dir} build has an unreadable VERSION"))?;
-            Ok(Some(Target { build, dir }))
-        }
-    }
+/// `STABLE` on main: the shipped version and the commit it was built from.
+pub fn parse_stable(text: &str) -> Option<(Build, String)> {
+    let mut words = text.split_whitespace();
+    let build = Build::parse(words.next()?)?;
+    let commit = words.next()?;
+    (commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| (build, commit.to_ascii_lowercase()))
 }
 
 /// What a check found.
@@ -456,31 +445,33 @@ pub struct Check {
     pub stable: Option<Target>,
 }
 
-/// The newest build of `channel` that wasn't rolled back.
+/// Stable devices follow `STABLE` on main; Testing devices also take main's
+/// own `VERSION`, whichever is higher. Rolled-back builds are skipped.
 pub fn check(paths: &Paths, channel: Channel) -> Result<Check> {
     let state = paths.state();
     let current = Build::current();
-    let mut found = Vec::new();
-    for dir in Channel::Testing.dirs() {
-        if !channel.dirs().contains(dir) && *dir != "stable" {
-            continue;
-        }
-        if let Some(target) = published(dir)? {
-            found.push(target);
-        }
+    let stable = fetch_text(&raw_url("main", "STABLE"))?
+        .and_then(|t| parse_stable(&t))
+        .map(|(build, commit)| Target {
+            build,
+            git_ref: commit,
+        });
+    let mut candidates: Vec<Target> = stable.iter().cloned().collect();
+    if channel == Channel::Testing
+        && let Some(build) = fetch_text(&raw_url("main", "VERSION"))?
+            .as_deref()
+            .and_then(Build::parse)
+    {
+        candidates.push(Target {
+            build,
+            git_ref: "main".into(),
+        });
     }
-    let stable = found
-        .iter()
-        .find(|t| t.dir == "stable")
-        .filter(|s| current.is_test() && s.build < current && !state.is_bad(s.build))
-        .cloned();
-    let candidates: Vec<Target> = found
-        .into_iter()
-        .filter(|t| channel.dirs().contains(&t.dir))
-        .collect();
     let builds: Vec<Build> = candidates.iter().map(|t| t.build).collect();
     let newer = pick_newer(current, &builds, &state)
         .and_then(|b| candidates.into_iter().find(|t| t.build == b));
+    let stable =
+        stable.filter(|s| current.is_test() && s.build < current && !state.is_bad(s.build));
     Ok(Check { newer, stable })
 }
 
@@ -492,58 +483,82 @@ fn pick_newer(current: Build, builds: &[Build], state: &UpdateState) -> Option<B
         .max()
 }
 
-/// Download, verify and install `target` (newer or older), keeping the
-/// installed binary for a rollback. Returns what was installed.
+/// Download the source of `target`, build it with `scripts/build.sh` (the
+/// private compiler the installer set up) and install it, keeping the
+/// installed binary for a rollback. Returns what was installed. Takes a few
+/// minutes, like the first install.
 pub fn install(paths: &Paths, target: &Target) -> Result<Build> {
-    if std::env::consts::ARCH != "x86_64" {
-        bail!("Monitor OC is only built for x86_64");
-    }
-    if !cfg!(feature = "gui") {
-        bail!(
-            "this is the command-line-only build, which isn't published for updates; \
-             install Monitor OC with install.sh instead"
-        );
-    }
     let dir = paths.downloads.join(target.build.to_string());
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let result = install_from(paths, target, &dir);
     let _ = fs::remove_dir_all(&dir);
-    result.map(|()| target.build)
+    result
 }
 
-fn install_from(paths: &Paths, target: &Target, dir: &Path) -> Result<()> {
-    let build = target.build;
-    let file = dir.join(ASSET);
-    let sums = format!("{ASSET}.sha256");
-    for (name, to) in [(ASSET, file.clone()), (sums.as_str(), dir.join(&sums))] {
-        let to_str = to.to_str().context("download path is not valid UTF-8")?;
-        let url = site_url(target.dir, name);
-        match curl(&["--max-time", "600", "-o", to_str, &url])? {
-            Fetch::Ok(_) => {}
-            Fetch::NotFound => bail!(
-                "{} is no longer published (a newer build replaced it); check again",
-                build.label()
-            ),
-        }
+fn install_from(paths: &Paths, target: &Target, dir: &Path) -> Result<Build> {
+    let archive = dir.join("source.tar.gz");
+    let src = dir.join("source");
+    fs::create_dir_all(&src)?;
+    let archive_str = archive
+        .to_str()
+        .context("download path is not valid UTF-8")?;
+    match curl(&[
+        "--max-time",
+        "300",
+        "-o",
+        archive_str,
+        &tarball_url(&target.git_ref),
+    ])? {
+        Fetch::Ok(_) => {}
+        Fetch::NotFound => bail!("the source of {} isn't on GitHub", target.build.label()),
     }
-    let ok = Command::new("sha256sum")
-        .args(["-c", "--status", sums.as_str()])
-        .current_dir(dir)
+    let unpacked = Command::new("tar")
+        .args(["-xzf"])
+        .arg(&archive)
+        .arg("-C")
+        .arg(&src)
+        .arg("--strip-components=1")
         .status()
-        .context("running sha256sum")?
-        .success();
+        .context("running tar")?;
+    if !unpacked.success() {
+        bail!("the download of {} is damaged", target.build.label());
+    }
+    let found = fs::read_to_string(src.join("VERSION"))
+        .ok()
+        .as_deref()
+        .and_then(Build::parse)
+        .context("the download has no VERSION")?;
+    // main can move on between the check and the download: take the newer
+    // build then (never an older or rolled-back one). A shipped commit is
+    // exactly what it says.
+    let ok = if target.git_ref == "main" {
+        found >= target.build && found > Build::current() && !paths.state().is_bad(found)
+    } else {
+        found == target.build
+    };
     if !ok {
-        bail!("the download of {} failed its checksum", build.label());
+        bail!("version mismatch ({found} instead of {})", target.build);
     }
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&file, fs::Permissions::from_mode(0o755))?;
+
+    let out = Command::new("bash")
+        .arg(src.join("scripts/build.sh"))
+        .arg(&src)
+        .output()
+        .context("running the build")?;
+    if !out.status.success() {
+        let log = String::from_utf8_lossy(&out.stderr);
+        let tail: Vec<&str> = log.lines().rev().take(25).collect();
+        let tail: Vec<&str> = tail.into_iter().rev().collect();
+        bail!("building {} failed:\n{}", found.label(), tail.join("\n"));
     }
-    let reported = run_version(&file).context("the downloaded build won't run")?;
-    if Build::parse(&reported) != Some(build) {
-        bail!("the download says it is {reported}, not {}", build.label());
+    let built = String::from_utf8_lossy(&out.stdout);
+    let file = PathBuf::from(built.lines().last().unwrap_or_default().trim());
+    let reported = run_version(&file).context("the new build won't run")?;
+    if Build::parse(&reported) != Some(found) {
+        bail!("the new build says it is {reported}, not {}", found.label());
     }
+    let build = found;
 
     // Keep what is installed now, so this can be undone.
     let mut state = paths.state();
@@ -572,7 +587,8 @@ fn install_from(paths: &Paths, target: &Target, dir: &Path) -> Result<()> {
     state.installed = Some(build.to_string());
     state.pending = Some(build.to_string());
     state.starts = 0;
-    paths.save_state(&state)
+    paths.save_state(&state)?;
+    Ok(build)
 }
 
 /// What `monitor-oc --version` of `binary` says, e.g. "0.2.0.1".
@@ -676,7 +692,7 @@ STATE={state}
 SETTINGS={settings}
 ENTRY={entry}
 DATA={data}
-STABLE='https://raw.githubusercontent.com/{REPO}/main/install.sh'
+REPO='{REPO}'
 
 set_stable() {{
     mkdir -p "$(dirname "$SETTINGS")"
@@ -689,7 +705,7 @@ set_stable() {{
 echo "Monitor OC Testing Rescue"
 echo
 echo "  1) Roll back to the previous version"
-echo "  2) Go back to Stable (installs the latest stable release)"
+echo "  2) Go back to Stable (downloads and builds it, a few minutes)"
 echo "  3) Uninstall Monitor OC"
 echo "  4) Close"
 echo
@@ -716,12 +732,22 @@ case $choice in
     fi
     ;;
 2)
-    if curl -fsSL "$STABLE" | sh; then
-        set_stable
-        echo
-        echo "Back on Stable."
+    commit=$(curl -fsSL "https://raw.githubusercontent.com/$REPO/main/STABLE" 2> /dev/null |
+        awk '{{print $2; exit}}')
+    if [ -z "$commit" ]; then
+        echo "Nothing has shipped to Stable yet."
     else
-        echo "Could not install Stable. Check the internet connection and try again."
+        src=$(mktemp -d)
+        if curl -fsSL "https://codeload.github.com/$REPO/tar.gz/$commit" |
+            tar -xz -C "$src" --strip-components=1 &&
+            bash "$src/scripts/install.sh"; then
+            set_stable
+            echo
+            echo "Back on Stable."
+        else
+            echo "Could not install Stable. Check the internet connection and try again."
+        fi
+        rm -rf "$src"
     fi
     ;;
 3)
@@ -849,7 +875,10 @@ pub fn command(check_only: bool, channel: Option<Channel>, undo: bool) -> Result
         );
         return Ok(());
     }
-    println!("Installing {}…", target.build.label());
+    println!(
+        "Downloading and building {} (a few minutes)…",
+        target.build.label()
+    );
     if let Err(e) = install(&paths, &target) {
         crate::report::auto(
             crate::report::Kind::UpdateFailure,
@@ -957,6 +986,18 @@ mod tests {
     }
 
     #[test]
+    fn stable_file() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(
+            parse_stable(&format!("0.3.0 {sha}\n")),
+            Some((b("0.3.0"), sha.to_string()))
+        );
+        assert_eq!(parse_stable("0.3.0"), None);
+        assert_eq!(parse_stable("0.3.0 nothex"), None);
+        assert_eq!(parse_stable(""), None);
+    }
+
+    #[test]
     fn paths_follow_xdg() {
         let p = Paths::new(Path::new("/home/deck"), None, None);
         assert_eq!(
@@ -988,7 +1029,7 @@ mod tests {
         let script = rescue_script(&p);
         assert!(script.starts_with("#!/bin/sh\n"));
         assert!(script.contains(r"BIN='/home/it'\''s me/.local/bin/monitor-oc'"));
-        assert!(script.contains("/main/install.sh"));
+        assert!(script.contains("main/STABLE"));
         let entry = rescue_entry(&p.rescue_script).unwrap();
         assert!(entry.contains("Terminal=true"));
         assert!(

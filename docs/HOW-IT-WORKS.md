@@ -42,9 +42,15 @@ runtime. The icon is [`assets/io.github.ravenor907.MonitorOC.svg`](assets/io.git
 after changing it, regenerate the PNG that Steam uses:
 `rsvg-convert -w 256 -h 256 assets/io.github.ravenor907.MonitorOC.svg -o assets/io.github.ravenor907.MonitorOC.png`.
 
-## Releases
+## Install and updates
 
-There is one branch, `main`, and no GitHub releases or packages. Every push to `main` that passes CI is
-built and published on the project's GitHub Pages site: `testing/` always gets the new build, `stable/`
-only when `VERSION` is a Stable version (x.y.z). Each folder holds the binary, its `.sha256` and `VERSION`.
-install.sh and the app's updater download from there; the Stable / Testing choice is a setting in the app.
+Like Ally Hub, Monitor OC is installed from this repository: `git clone`, then `scripts/install.sh`.
+`scripts/build.sh` builds it with a private Rust compiler in `~/.local/share/monitor-oc/toolchain`
+(rustup, set up on first use). SteamOS has no C compiler for the final link, so there it links with Zig
+through cargo-zigbuild, installed from PyPI into a private Python environment next to the compiler.
+
+There is one branch, `main`, and no releases or packages. `VERSION` on main is the newest build (a test
+build x.y.z.N, or a Stable x.y.z). `STABLE` names the shipped Stable version and its commit. The app checks
+both: Stable devices follow `STABLE`, Testing devices take the higher of the two. An update downloads that
+source from GitHub, builds it with `scripts/build.sh`, checks its version and installs it, keeping the
+previous build for a rollback. `scripts/uninstall.sh` removes everything, compiler included.

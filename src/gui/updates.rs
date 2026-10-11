@@ -515,7 +515,10 @@ pub fn show(ui: &mut Ui, updates: &mut Updates, out: &mut Vec<Action>) {
             Status::Checking => ("Checking for updates…".into(), p.text_dim),
             Status::UpToDate => ("You're up to date.".into(), p.good),
             Status::Available(t) => (format!("{} is available.", t.build.label()), p.accent),
-            Status::Installing(b) => (format!("Installing {}…", b.label()), p.text_dim),
+            Status::Installing(b) => (
+                format!("Downloading and building {} (a few minutes)…", b.label()),
+                p.text_dim,
+            ),
             Status::Installed(v) => (
                 format!(
                     "{} is installed. Restart Monitor OC to use it.",
