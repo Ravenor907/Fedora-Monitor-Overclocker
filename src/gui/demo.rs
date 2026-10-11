@@ -33,6 +33,7 @@ impl World {
                 max: 0,
                 method: Method::Clock,
                 trial: Some((135, TrialState::Armed)),
+                live: None,
             },
             profile_installed: true,
             report: None,

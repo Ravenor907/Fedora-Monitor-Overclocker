@@ -28,6 +28,11 @@ pub enum Action {
     Copy(String),
     Refresh,
     Update(crate::gui::updates::UpdateAction),
+    /// Switch the built-in screen to a trial rate for a live test.
+    PanelTest {
+        hz: u32,
+        stock_max: u32,
+    },
 }
 
 /// Changes that need a second, deliberate "yes".
@@ -42,6 +47,7 @@ pub enum Dialog {
     Remove(Kind),
     /// Switch the update channel to Testing.
     Testing,
+    Uninstall,
 }
 
 pub fn header(ui: &mut Ui, title: &str, subtitle: &str) {

@@ -702,7 +702,7 @@ case $choice in
     fi
     ;;
 3)
-    "$BIN" uninstall || {{ [ -x "$PREV" ] && "$PREV" uninstall; }} || rm -f "$BIN"
+    "$BIN" uninstall --purge || {{ [ -x "$PREV" ] && "$PREV" uninstall --purge; }} || rm -f "$BIN"
     rm -rf "$DATA"
     rm -f "$ENTRY"
     ;;

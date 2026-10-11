@@ -5,7 +5,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/Ravenor907/monitor-oc/main/install.sh | sh
 #
-# Uninstall:          ... | sh -s -- --uninstall [--purge]
+# Uninstall:          ... | sh -s -- --uninstall [--keep-settings]
 # A specific release: ... | MONITOR_OC_VERSION=v0.2.0 sh
 
 set -eu
@@ -22,13 +22,13 @@ die() {
 
 usage() {
     cat <<EOF
-Usage: install.sh [--uninstall [--purge]]
+Usage: install.sh [--uninstall [--keep-settings]]
 
 Installs Monitor OC for your user account (no sudo needed).
 
-  --uninstall   remove Monitor OC again
-  --purge       with --uninstall: also delete its settings, including the
-                built-in screen overclock for Game Mode
+  --uninstall       remove Monitor OC and its settings (the built-in screen
+                    goes back to its stock refresh rates in Game Mode)
+  --keep-settings   with --uninstall: keep the built-in screen settings
 
 Set MONITOR_OC_VERSION (e.g. v0.2.0) to install that release instead of
 the latest one.
@@ -63,11 +63,12 @@ verify() {
 
 main() {
     action=install
-    purge=
+    keep=
     for arg in "$@"; do
         case $arg in
         --uninstall) action=uninstall ;;
-        --purge) purge=--purge ;;
+        --keep-settings) keep=1 ;;
+        --purge) ;; # removing everything is the default
         -h | --help)
             usage
             exit 0
@@ -78,8 +79,14 @@ main() {
             ;;
         esac
     done
-    if [ -n "$purge" ] && [ "$action" != uninstall ]; then
-        die "--purge only works together with --uninstall"
+    if [ -n "$keep" ] && [ "$action" != uninstall ]; then
+        die "--keep-settings only works together with --uninstall"
+    fi
+    # Every Monitor OC release understands --purge (older ones keep the
+    # settings without it); newer ones also --keep-settings.
+    flags=
+    if [ "$action" = uninstall ]; then
+        if [ -n "$keep" ]; then flags=--keep-settings; else flags=--purge; fi
     fi
 
     if [ "$(id -u)" -eq 0 ]; then
@@ -93,7 +100,7 @@ main() {
     # Uninstalling needs no download when the installed copy is there.
     installed="$HOME/.local/bin/monitor-oc"
     if [ "$action" = uninstall ] && [ -x "$installed" ]; then
-        "$installed" uninstall ${purge:+"$purge"} </dev/null
+        "$installed" uninstall "$flags" </dev/null
         return
     fi
 
@@ -133,7 +140,7 @@ If it says 'Permission denied', your temporary directory does not allow programs
 this again with TMPDIR=\$HOME/.cache"
     fi
     say "Downloaded $version."
-    "$tmp/$ASSET" "$action" ${purge:+"$purge"} </dev/null
+    "$tmp/$ASSET" "$action" ${flags:+"$flags"} </dev/null
 }
 
 main "$@"

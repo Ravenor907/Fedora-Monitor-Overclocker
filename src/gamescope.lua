@@ -4,9 +4,13 @@
 -- panel. Remove it with `monitor-oc panel remove`, or delete this file and
 -- restart Game Mode.
 --
--- Safety: a new rate starts as a one-session trial. If Gamescope starts again
--- before the trial is confirmed (for example after a forced reboot from a black
--- screen), the trial is dropped and the panel goes back to its stock range.
+-- Safety: a new rate starts as a one-session trial. During the trial, rates
+-- above the confirmed range are only really used while monitor-oc is testing
+-- that exact rate (`live` and `live_until` in the state file, re-read on every
+-- mode switch); any other time Gamescope asks for them it gets the stock mode.
+-- If Gamescope starts again before the trial is confirmed (for example after
+-- a forced reboot from a black screen), the trial is dropped and the panel
+-- goes back to its stock range.
 
 local MONITOR_OC_KEY = "monitor_oc_panel"
 local panel = {
@@ -28,7 +32,7 @@ local function log(priority, text)
     end
 end
 
-local STATE_KEYS = { "max", "method", "trial", "trial_state" }
+local STATE_KEYS = { "max", "method", "trial", "trial_state", "live", "live_until", "live_pid" }
 
 local function read_kv(path)
     local out = {}
@@ -64,6 +68,7 @@ local report = {}
 local REPORT_KEYS = {
     "loaded_at", "base", "base_name", "stock_min", "stock_max", "limit",
     "method", "trial", "extended", "last_refresh", "last_mode", "last_clock_khz",
+    "held_back",
 }
 local function save_report()
     write_kv(report_path, report, REPORT_KEYS)
@@ -180,6 +185,22 @@ for r = stock_max + 1, limit do
     table.insert(rates, r)
 end
 
+-- Rates above this are only used while monitor-oc is testing them.
+local confirmed_max = math.max(stock_max, tonumber(state.max) or 0)
+local trial_session = report.trial == "running"
+
+local function allowed(refresh)
+    if not trial_session or refresh <= confirmed_max then
+        return true
+    end
+    local now = read_kv(state_path)
+    if tonumber(now.trial) ~= trial or now.trial_state ~= "running" then
+        -- Confirmed since this session started (max raised), or dropped.
+        return refresh <= (tonumber(now.max) or 0)
+    end
+    return tonumber(now.live) == refresh and os.time() <= (tonumber(now.live_until) or 0)
+end
+
 local ours = base and copy(base) or {}
 ours.pretty_name = (base and base.pretty_name or "Built-in display") .. " (monitor-oc, up to " .. limit .. " Hz)"
 ours.dynamic_refresh_rates = rates
@@ -203,6 +224,13 @@ ours.dynamic_modegen = function(base_mode, refresh)
         log("warning", refresh .. " Hz is above the enabled limit of " .. limit .. " Hz; using the native mode")
         return base_mode
     end
+
+    if not allowed(refresh) then
+        -- Not being tested right now (or the test timed out): stay at stock.
+        report.held_back = refresh
+        return ours.dynamic_modegen(base_mode, stock_max)
+    end
+    report.held_back = nil
 
     -- Start from the panel's timing at its stock maximum (fixed pixel clock,
     -- front porch adjusted), so both methods scale from the real native mode.

@@ -40,6 +40,7 @@ pub enum UpdateAction {
     Channel(Channel),
     Auto(bool),
     Restart,
+    Uninstall,
 }
 
 enum Msg {
@@ -49,6 +50,7 @@ enum Msg {
     },
     Installed(Result<Build, String>),
     RolledBack(Result<String, String>),
+    Uninstalled(Result<(), String>),
 }
 
 pub struct Updates {
@@ -63,6 +65,9 @@ pub struct Updates {
     /// A build rolled back on its own at startup.
     pub rolled_back_at_start: Option<String>,
     toasts: Vec<(bool, String)>,
+    /// Monitor OC was uninstalled; the app closes at this time.
+    pub close_at: Option<std::time::Instant>,
+    uninstalling: bool,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     ctx: egui::Context,
@@ -89,6 +94,8 @@ impl Updates {
                 .ok()
                 .filter(|v| !v.is_empty()),
             toasts: Vec::new(),
+            close_at: None,
+            uninstalling: false,
             tx,
             rx,
             ctx: ctx.clone(),
@@ -217,6 +224,20 @@ impl Updates {
                         ),
                     ));
                 }
+                Msg::Uninstalled(Ok(())) => {
+                    self.toasts.push((
+                        true,
+                        "Monitor OC is uninstalled. If you added it to Steam, remove that \
+                         shortcut too. Closing…"
+                            .into(),
+                    ));
+                    self.close_at =
+                        Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+                }
+                Msg::Uninstalled(Err(e)) => {
+                    self.uninstalling = false;
+                    self.toasts.push((false, format!("Uninstall failed: {e}")));
+                }
                 Msg::RolledBack(Err(e)) => {
                     self.toasts.push((false, format!("Rollback failed: {e}")));
                     self.status = Status::Failed(e);
@@ -272,7 +293,42 @@ impl Updates {
                 }
             }
             UpdateAction::Restart => self.restart(),
+            UpdateAction::Uninstall => self.uninstall(),
         }
+    }
+
+    /// Run `monitor-oc uninstall` (everything, settings included).
+    fn uninstall(&mut self) {
+        if self.uninstalling || self.paths.is_none() {
+            return;
+        }
+        self.uninstalling = true;
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        let _ = thread::Builder::new()
+            .name("uninstall".into())
+            .spawn(move || {
+                let result = std::env::current_exe()
+                    .map_err(|e| e.to_string())
+                    .and_then(|exe| {
+                        std::process::Command::new(exe)
+                            .arg("uninstall")
+                            .stdin(std::process::Stdio::null())
+                            .output()
+                            .map_err(|e| e.to_string())
+                    })
+                    .and_then(|out| {
+                        if out.status.success() {
+                            Ok(())
+                        } else {
+                            Err(String::from_utf8_lossy(&out.stderr)
+                                .trim()
+                                .trim_start_matches("error: ")
+                                .to_string())
+                        }
+                    });
+                let _ = tx.send(Msg::Uninstalled(result));
+                ctx.request_repaint();
+            });
     }
 
     /// Replace this process with the installed build, same arguments.
@@ -420,4 +476,24 @@ pub fn show(ui: &mut Ui, updates: &Updates, out: &mut Vec<Action>) {
             }
         });
     }
+    ui.add_space(12.0);
+    card(ui, |ui| {
+        caption(ui, "Remove", p.text_faint);
+        dim(
+            ui,
+            "Uninstall removes Monitor OC, its menu entries and its settings. The built-in screen \
+             goes back to its stock refresh rates the next time Game Mode starts.",
+        );
+        ui.add_space(6.0);
+        if button_if(
+            ui,
+            !updates.uninstalling,
+            "Uninstall Monitor OC",
+            Kind::Danger,
+        )
+        .clicked()
+        {
+            out.push(Action::Ask(Dialog::Uninstall));
+        }
+    });
 }

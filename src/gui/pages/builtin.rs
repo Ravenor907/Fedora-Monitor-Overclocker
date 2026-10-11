@@ -105,15 +105,14 @@ fn trial_banner(ui: &mut Ui, info: &PanelInfo, s: &Settings, view: &View, out: &
                     } else {
                         "Switch to Game Mode.".to_string()
                     },
-                    format!(
-                        "Open Quick Access (…) > Performance and raise Refresh Rate to {hz} Hz."
-                    ),
-                    "Come back here and keep it if the picture is right.".to_string(),
+                    "Open Monitor OC there and press Test.".to_string(),
+                    "Keep it within 10 seconds if the picture is right, and once more after 5 minutes."
+                        .to_string(),
                 ],
             );
             faint(
                 ui,
-                "If the screen goes black, hold the power button to restart: the trial switches itself off.",
+                "Nothing to keep? It goes back to stock by itself, black screen included.",
             );
             ui.add_space(4.0);
             row(ui, |ui| {
@@ -126,26 +125,40 @@ fn trial_banner(ui: &mut Ui, info: &PanelInfo, s: &Settings, view: &View, out: &
             });
         }),
         TrialState::Running => banner(ui, p.accent, |ui| {
-            caption(ui, "Trial running", p.accent);
-            ui.label(RichText::new(format!("Did {hz} Hz work?")).font(bold(24.0)));
+            let loaded = s
+                .report
+                .as_ref()
+                .is_some_and(|r| r.trial.as_deref() == Some("running"))
+                && !s.stale
+                && (view.game_mode || view.demo);
+            caption(ui, "Trial ready to test", p.accent);
+            ui.label(RichText::new(format!("Test {hz} Hz")).font(bold(24.0)));
             dim(
                 ui,
-                format!(
-                    "Game Mode may use up to {hz} Hz for this session only. Pick it in Quick Access > \
-                     Performance > Refresh Rate and check the picture; Verify measures it. Restarting \
-                     without deciding turns the trial off."
-                ),
+                if loaded {
+                    format!(
+                        "The screen switches to {hz} Hz. Keep it within 10 seconds if the picture is \
+                         right, then once more after 5 minutes. No answer, or a black screen, and it \
+                         goes back to {} Hz by itself.",
+                        info.stock_max.max(s.state.max)
+                    )
+                } else {
+                    "Open Monitor OC in the Game Mode session that loaded the trial to test it. Until \
+                     then the screen stays at its stock rate, even if a higher one is picked in Quick \
+                     Access."
+                        .to_string()
+                },
             );
             ui.add_space(4.0);
             row(ui, |ui| {
-                if button(ui, format!("Keep {hz} Hz"), Kind::Primary).clicked() {
-                    out.push(Action::Panel(PanelAction::Confirm));
+                if loaded && button(ui, format!("Test {hz} Hz"), Kind::Primary).clicked() {
+                    out.push(Action::PanelTest {
+                        hz,
+                        stock_max: info.stock_max.max(s.state.max),
+                    });
                 }
                 if button(ui, "Discard", Kind::Secondary).clicked() {
                     out.push(Action::Panel(PanelAction::Discard));
-                }
-                if button(ui, "Verify  →", Kind::Ghost).clicked() {
-                    out.push(Action::Verify(hz));
                 }
             });
         }),

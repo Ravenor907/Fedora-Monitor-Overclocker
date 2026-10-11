@@ -7,6 +7,7 @@ use super::demo::World;
 use super::gamepad::Gamepad;
 use super::jobs::{self, Job, Kind as JobKind, Outcome, TEST_SECONDS};
 use super::pages::{Action, Dialog, View, builtin, diagnostics, external, verify};
+use super::panel_test::{self, PanelTest, Phase};
 use super::prefs::{self, Prefs};
 use super::theme::{self, bold, font, palette, tint};
 use super::updates::{self, UpdateAction, Updates};
@@ -69,6 +70,8 @@ pub struct App {
     started: Instant,
     /// A fresh build was told it works (see `update::mark_healthy`).
     healthy: bool,
+    /// A live test of a built-in screen rate in Game Mode.
+    panel_test: Option<PanelTest>,
 }
 
 impl App {
@@ -97,6 +100,7 @@ impl App {
             pad,
             started: Instant::now(),
             healthy: setup.demo,
+            panel_test: None,
             backend,
             events,
             snap: None,
@@ -175,6 +179,11 @@ impl App {
                 let excess = self.log.len().saturating_sub(LOG_LINES);
                 self.log.drain(..excess);
             }
+            jobs::Event::RecheckWait => job.enter(jobs::Phase::Waiting),
+            jobs::Event::Recheck => {
+                job.enter(jobs::Phase::Recheck);
+                self.focus_dialog = true;
+            }
             jobs::Event::Live => {
                 job.live_since = Some(Instant::now());
                 if let JobKind::Test {
@@ -228,6 +237,17 @@ impl App {
                 self.toast(true, "Copied to the clipboard.");
             }
             Action::Update(action) => self.updates.act(action),
+            Action::PanelTest { hz, stock_max } => {
+                if self.panel_test.is_none() {
+                    match PanelTest::start(ctx, hz, stock_max, self.setup.demo) {
+                        Ok(test) => {
+                            self.panel_test = Some(test);
+                            self.focus_dialog = true;
+                        }
+                        Err(e) => self.toast(false, format!("Couldn't start the test: {e}")),
+                    }
+                }
+            }
             Action::Refresh => {
                 self.backend.refresh();
                 self.last_scan = Instant::now();
@@ -469,6 +489,8 @@ impl App {
             ui.add_space(pad);
             ui.allocate_ui_with_layout(vec2(content_w, 0.0), Layout::top_down(Align::Min), |ui| {
                 ui.set_width(content_w);
+                self.panel_test_banner(ui);
+                self.job_wait_banner(ui);
                 if self.page == Page::Updates {
                     updates::show(ui, &self.updates, out);
                     return;
@@ -512,10 +534,16 @@ impl App {
 
     fn dialogs(&mut self, ctx: &egui::Context, out: &mut Vec<Action>) {
         if self
-            .job
+            .panel_test
             .as_ref()
-            .is_some_and(|j| j.running() && matches!(j.kind, JobKind::Test { .. }))
+            .is_some_and(|t| t.phase != Phase::Waiting)
         {
+            self.panel_test_dialog(ctx);
+            return;
+        }
+        if self.job.as_ref().is_some_and(|j| {
+            j.running() && matches!(j.kind, JobKind::Test { .. }) && j.phase != jobs::Phase::Waiting
+        }) {
             self.test_dialog(ctx);
             return;
         }
@@ -574,6 +602,19 @@ impl App {
                         "Drop it…".into(),
                         Kind::Danger,
                     ),
+                    Dialog::Uninstall => (
+                        "Uninstall Monitor OC?".into(),
+                        vec![
+                            "Removes the app, its menu entries, updates and settings. The built-in \
+                             screen goes back to stock from the next Game Mode start."
+                                .into(),
+                            "Overrides for external monitors are removed too (that needs your \
+                             password)."
+                                .into(),
+                        ],
+                        "Uninstall".into(),
+                        Kind::Danger,
+                    ),
                     Dialog::Testing => (
                         "Switch to test builds?".into(),
                         update::TESTING_DISCLAIMER
@@ -630,6 +671,7 @@ impl App {
                     Some(Dialog::Apply { kind, .. }) | Some(Dialog::Remove(kind)) => {
                         out.push(Action::Run(kind))
                     }
+                    Some(Dialog::Uninstall) => out.push(Action::Update(UpdateAction::Uninstall)),
                     Some(Dialog::Testing) => {
                         out.push(Action::Update(UpdateAction::Channel(Channel::Testing)))
                     }
@@ -691,7 +733,14 @@ impl App {
                     ui.label(RichText::new("Reverting…").font(bold(22.0)));
                     return;
                 }
-                ui.label(RichText::new("Keep this mode?").font(bold(24.0)));
+                ui.label(
+                    RichText::new(if job.phase == jobs::Phase::Recheck {
+                        "Still good after 5 minutes?"
+                    } else {
+                        "Keep this mode?"
+                    })
+                    .font(bold(24.0)),
+                );
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     countdown(ui, left, TEST_SECONDS);
@@ -731,6 +780,223 @@ impl App {
             });
         if let Some(keep) = answer {
             job.answer(keep);
+        }
+    }
+
+    fn tick_panel_test(&mut self, ctx: &egui::Context) {
+        let Some(test) = self.panel_test.as_mut() else {
+            return;
+        };
+        ctx.request_repaint_after(Duration::from_millis(250));
+        let Some(outcome) = test.tick() else {
+            return;
+        };
+        let demo = test.is_demo();
+        self.panel_test = None;
+        match outcome {
+            panel_test::Outcome::Kept(hz) => {
+                if demo {
+                    self.backend.panel(PanelAction::Confirm);
+                }
+                self.toast(
+                    true,
+                    format!(
+                        "{hz} Hz passed both checks and is kept. Game Mode offers it from now on."
+                    ),
+                );
+            }
+            panel_test::Outcome::Reverted { hz, why } => {
+                self.toast(
+                    false,
+                    format!("Back to stock: {hz} Hz was undone because {why}."),
+                );
+            }
+        }
+        self.backend.refresh();
+    }
+
+    /// The live test's "keep it?" questions, with the countdown.
+    fn panel_test_dialog(&mut self, ctx: &egui::Context) {
+        let p = palette(ctx);
+        let focus = std::mem::take(&mut self.focus_dialog);
+        let Some(test) = self.panel_test.as_mut() else {
+            return;
+        };
+        let (hz, stock, left) = (test.hz, test.stock_max, test.seconds_left());
+        let mut answer = None;
+        egui::Modal::new(Id::new("panel-test"))
+            .frame(Self::modal_frame(ctx))
+            .backdrop_color(Color32::from_black_alpha(170))
+            .show(ctx, |ui| {
+                ui.set_width(500.0);
+                match test.phase {
+                    Phase::Switching | Phase::Finishing => {
+                        caption(ui, &format!("Live test  ·  {hz} Hz"), p.accent);
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new().size(26.0));
+                            ui.label(
+                                RichText::new(if test.phase == Phase::Switching {
+                                    format!("Switching to {hz} Hz…")
+                                } else {
+                                    "Finishing…".into()
+                                })
+                                .font(bold(22.0)),
+                            );
+                        });
+                        return;
+                    }
+                    Phase::Waiting => return,
+                    Phase::Confirm | Phase::Recheck => {}
+                }
+                let recheck = test.phase == Phase::Recheck;
+                caption(
+                    ui,
+                    if recheck {
+                        "Double check  ·  5 minutes in"
+                    } else {
+                        "Live test  ·  check 1 of 2"
+                    },
+                    p.accent,
+                );
+                ui.label(
+                    RichText::new(if recheck {
+                        format!("Still good at {hz} Hz?")
+                    } else {
+                        format!("Keep {hz} Hz?")
+                    })
+                    .font(bold(24.0)),
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    countdown(ui, left, crate::live::CONFIRM_SECS);
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new(format!("Back to {stock} Hz in {left} s"))
+                                .font(bold(18.0))
+                                .color(p.text),
+                        );
+                        dim(
+                            ui,
+                            if recheck {
+                                "Keep it to make it permanent. If anything flickered or froze, let it go back."
+                            } else {
+                                "Check for flicker, lines or a black screen. If you can't see anything, just wait."
+                            },
+                        );
+                    });
+                });
+                ui.add_space(10.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add(Button::new(format!("Keep {hz} Hz"), Kind::Primary))
+                        .clicked()
+                    {
+                        answer = Some(true);
+                    }
+                    let back = ui.add(Button::new("Go back now", Kind::Secondary));
+                    if focus || ui.memory(|m| m.focused().is_none()) {
+                        back.request_focus();
+                    }
+                    if back.clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+        match answer {
+            Some(true) => test.keep(),
+            Some(false) => test.revert("you chose to go back".into()),
+            None => {}
+        }
+    }
+
+    /// An external monitor test between its two checks.
+    fn job_wait_banner(&mut self, ui: &mut Ui) {
+        let Some(job) = self.job.as_mut() else {
+            return;
+        };
+        if !job.running() || job.phase != jobs::Phase::Waiting {
+            return;
+        }
+        let JobKind::Test {
+            connector, mode, ..
+        } = job.kind.clone()
+        else {
+            return;
+        };
+        ui.ctx().request_repaint_after(Duration::from_millis(500));
+        let p = palette(ui.ctx());
+        let left = job.seconds_left().unwrap_or(0);
+        let mut back = false;
+        widgets::banner(ui, p.accent, |ui| {
+            caption(ui, &format!("Live test  ·  {connector}"), p.accent);
+            ui.label(
+                RichText::new(format!(
+                    "Running {mode}  ·  double check in {}:{:02}",
+                    left / 60,
+                    left % 60
+                ))
+                .font(bold(20.0)),
+            );
+            dim(
+                ui,
+                "Use it normally. Be back here for the double check: if nobody keeps it then, \
+                 the monitor goes back to its own EDID.",
+            );
+            ui.add_space(4.0);
+            back = ui.add(Button::new("Revert now", Kind::Secondary)).clicked();
+        });
+        ui.add_space(12.0);
+        if back {
+            job.answer(false);
+        }
+    }
+
+    /// Between the two checks: the countdown to the double check.
+    fn panel_test_banner(&mut self, ui: &mut Ui) {
+        let Some(test) = self.panel_test.as_mut() else {
+            return;
+        };
+        if test.phase != Phase::Waiting {
+            return;
+        }
+        let p = palette(ui.ctx());
+        let left = test.seconds_left();
+        let mut back = false;
+        let mut verify = false;
+        widgets::banner(ui, p.accent, |ui| {
+            caption(ui, "Live test  ·  check 2 of 2 coming up", p.accent);
+            ui.label(
+                RichText::new(format!(
+                    "Running at {} Hz  ·  double check in {}:{:02}",
+                    test.hz,
+                    left / 60,
+                    left % 60
+                ))
+                .font(bold(20.0)),
+            );
+            dim(
+                ui,
+                "Use it normally or measure it on Verify. Be back in Monitor OC for the double check: \
+                 if nobody keeps it then, the screen goes back to stock.",
+            );
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
+                verify = ui.add(Button::new("Verify  →", Kind::Ghost)).clicked();
+                back = ui
+                    .add(Button::new("Go back now", Kind::Secondary))
+                    .clicked();
+            });
+        });
+        ui.add_space(12.0);
+        if back {
+            test.revert("you chose to go back".into());
+        }
+        if verify {
+            let hz = test.hz;
+            self.verify.retarget(hz);
+            self.go(Page::Verify);
         }
     }
 
@@ -778,6 +1044,12 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Some(test) = self.panel_test.as_mut() {
+            test.abort();
+        }
+    }
+
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         if let Some(pad) = &mut self.pad {
             pad.feed(ctx, raw_input);
@@ -788,8 +1060,16 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.pump();
         self.updates.pump();
+        self.tick_panel_test(&ctx);
         for (ok, text) in self.updates.take_toasts() {
             self.toast(ok, text);
+        }
+        if let Some(at) = self.updates.close_at {
+            if Instant::now() >= at {
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(500));
+            }
         }
         if !self.healthy && self.started.elapsed().as_secs() >= update::HEALTHY_AFTER_SECS {
             self.healthy = true;

@@ -376,11 +376,42 @@ pub fn install() -> Result<()> {
     Ok(())
 }
 
-/// `monitor-oc uninstall`: remove what `install` added, and with `purge` also
-/// the built-in screen settings and monitor-oc's config directory.
+/// `monitor-oc uninstall`: remove what `install` added, and with `purge`
+/// (the default) also the built-in screen settings and monitor-oc's config.
+/// Overrides for external monitors live outside the home directory; they are
+/// removed through pkexec (or sudo in a terminal) first.
+/// Run `monitor-oc remove` as root: pkexec with a graphical session, sudo
+/// in a terminal. True when it ran and succeeded.
+fn remove_overrides_as_root() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let graphical = ["WAYLAND_DISPLAY", "DISPLAY"]
+        .iter()
+        .any(|v| std::env::var_os(v).is_some_and(|s| !s.is_empty()));
+    let (tool, why) = if graphical && system::which("pkexec") {
+        ("pkexec", "Approve the password prompt")
+    } else if system::which("sudo") {
+        ("sudo", "Enter your password")
+    } else {
+        return false;
+    };
+    println!(
+        "External-monitor overrides are installed; removing them needs root. {why} to continue."
+    );
+    std::process::Command::new(tool)
+        .arg(&exe)
+        .arg("remove")
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 pub fn uninstall(purge: bool) -> Result<()> {
     let paths = Paths::for_current_user()?;
-    let overrides = state::load();
+    let mut overrides = state::load();
+    if !overrides.is_empty() && remove_overrides_as_root() {
+        overrides = state::load();
+    }
     if !overrides.is_empty() {
         let list: Vec<String> = overrides
             .iter()
@@ -431,10 +462,8 @@ pub fn uninstall(purge: bool) -> Result<()> {
         println!("\nRestart Game Mode to go back to the built-in screen's stock refresh range.");
     } else if !purge && gamescope::installed(&screen) {
         println!(
-            "\nYour built-in screen settings were kept, and Game Mode keeps using them.\n\
-             To remove them too, delete these and restart Game Mode:\n  {}\n  {}",
-            paths.show(&screen.script),
-            paths.show(screen.state.parent().unwrap_or(&screen.state))
+            "\nYour built-in screen settings were kept (--keep-settings), and Game Mode keeps\n\
+             using them. `monitor-oc uninstall` without it removes them too."
         );
     }
     if removed.contains(&paths.desktop) {

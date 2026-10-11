@@ -5,12 +5,14 @@ mod gamescope;
 #[cfg(feature = "gui")]
 mod gui;
 mod install;
+mod live;
 mod plan;
 mod service;
 mod state;
 mod system;
 mod timing;
 mod update;
+mod x11;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand};
@@ -60,9 +62,12 @@ enum Cmd {
     Test {
         #[command(flatten)]
         target: Target,
-        /// Seconds to wait before reverting.
-        #[arg(long, default_value_t = 30)]
+        /// Seconds to keep it before it reverts (asked twice).
+        #[arg(long, default_value_t = 10)]
         seconds: u64,
+        /// Seconds after the first keep before asking again (0: ask once).
+        #[arg(long, default_value_t = 300)]
+        recheck: u64,
     },
     /// Install the override so it loads on every boot.
     Apply {
@@ -135,9 +140,14 @@ enum Cmd {
         rollback: bool,
     },
     /// Remove what `install` added.
+    /// Remove Monitor OC: the program, menu entries, update data, its Game Mode
+    /// profile and settings (the built-in screen goes back to stock).
     Uninstall {
-        /// Also delete the built-in screen settings and ~/.config/monitor-oc.
+        /// Keep the built-in screen settings and ~/.config/monitor-oc.
         #[arg(long)]
+        keep_settings: bool,
+        /// Removing everything is the default now; accepted for old scripts.
+        #[arg(long, hide = true, conflicts_with = "keep_settings")]
         purge: bool,
     },
 }
@@ -161,6 +171,9 @@ enum PanelCmd {
     Reset,
     /// Delete monitor-oc's Gamescope profile entirely.
     Remove,
+    /// Take back a live refresh test the app didn't finish (started by the app).
+    #[command(hide = true)]
+    Watchdog,
 }
 
 #[derive(Args)]
@@ -239,7 +252,11 @@ fn run(cli: Cli) -> Result<()> {
             );
             Ok(())
         }
-        Cmd::Test { target, seconds } => test(&target, seconds),
+        Cmd::Test {
+            target,
+            seconds,
+            recheck,
+        } => test(&target, seconds, recheck),
         Cmd::Apply {
             target,
             now,
@@ -273,7 +290,10 @@ fn run(cli: Cli) -> Result<()> {
             rollback,
         } => update::command(check, channel, rollback),
         Cmd::Install => install::install(),
-        Cmd::Uninstall { purge } => install::uninstall(purge),
+        Cmd::Uninstall {
+            keep_settings,
+            purge: _,
+        } => install::uninstall(!keep_settings),
     }
 }
 
@@ -313,11 +333,12 @@ fn panel(command: PanelCmd) -> Result<()> {
             gamescope::try_rate(&panel, &paths, hz, method)?;
             println!(
                 "Trial armed: up to {hz} Hz for the next Game Mode session only.\n\n\
-                 1. Switch to Game Mode (on SteamOS: Return to Gaming Mode).\n\
-                 2. Open Quick Access (...) > Performance and raise Refresh Rate to {hz} Hz.\n\
-                 3. If it looks right, come back and run `monitor-oc panel confirm`.\n\n\
-                 If the screen goes black, hold the power button to restart: the trial is\n\
-                 dropped automatically on the next start and the stock range returns."
+                 1. Start (or restart) Game Mode so it loads the trial.\n\
+                 2. Open Monitor OC in Game Mode and press Test {hz} Hz. The screen switches\n\
+                    for 10 seconds: keep it if the picture is right, otherwise it goes back\n\
+                    to stock on its own. Keep it once more after 5 minutes to make it stick.\n\n\
+                 Until a rate is tested and kept, Game Mode keeps the screen at its stock\n\
+                 rate even if a higher one is picked in Quick Access."
             );
             Ok(())
         }
@@ -341,6 +362,7 @@ fn panel(command: PanelCmd) -> Result<()> {
             println!("Removed monitor-oc's Gamescope profile; restart Game Mode to finish.");
             Ok(())
         }
+        PanelCmd::Watchdog => live::watchdog(),
     }
 }
 
@@ -521,7 +543,11 @@ fn show(source: &str) -> Result<()> {
     Ok(())
 }
 
-fn test(target: &Target, seconds: u64) -> Result<()> {
+/// Lines `test` prints that the app watches for.
+pub const RECHECK_WAIT_MARKER: &str = "Kept for now. Double check in";
+pub const RECHECK_MARKER: &str = "Double check:";
+
+fn test(target: &Target, seconds: u64, recheck: u64) -> Result<()> {
     require_root()?;
     let conn = drm::find(&target.connector)?;
     guard(&conn, target.force)?;
@@ -538,33 +564,64 @@ fn test(target: &Target, seconds: u64) -> Result<()> {
          KDE: System Settings > Display Configuration   GNOME: Settings > Displays\n  \
          SteamOS Game Mode: Settings > Display (or use --preferred so it is chosen automatically)\n\n\
          If the screen goes black or shows artifacts, just wait: it reverts in {seconds} s.\n\
-         Type 'keep' + Enter to keep it until reboot, or press Enter to revert now.",
+         Type 'keep' + Enter to keep it, or press Enter to revert now.",
         conn.name, target.mode.hz
     );
 
-    let (tx, rx) = mpsc::channel();
+    // Every line typed (None when stdin closes, e.g. the app quit).
+    let (tx, rx) = mpsc::channel::<Option<String>>();
     std::thread::spawn(move || {
-        let mut line = String::new();
-        let _ = std::io::stdin().read_line(&mut line);
-        let _ = tx.send(line);
-    });
-    match rx.recv_timeout(Duration::from_secs(seconds)) {
-        Ok(line) if line.trim().eq_ignore_ascii_case("keep") => {
-            println!(
-                "Kept until reboot. Make it permanent with:\n  sudo monitor-oc apply {} {}{}",
-                conn.name,
-                target.mode,
-                if target.opts.preferred {
-                    " --preferred"
-                } else {
-                    ""
+        loop {
+            let mut line = String::new();
+            match std::io::stdin().read_line(&mut line) {
+                Ok(0) | Err(_) => {
+                    let _ = tx.send(None);
+                    return;
                 }
-            );
+                Ok(_) => {
+                    if tx.send(Some(line)).is_err() {
+                        return;
+                    }
+                }
+            }
         }
-        _ => {
-            conn.reset_override()?;
-            println!("Reverted to the monitor's own EDID.");
-        }
+    });
+    let kept = |timeout: u64| {
+        matches!(
+            rx.recv_timeout(Duration::from_secs(timeout)),
+            Ok(Some(line)) if line.trim().eq_ignore_ascii_case("keep")
+        )
+    };
+    let mut keep = kept(seconds);
+    if keep && recheck > 0 {
+        println!(
+            "{RECHECK_WAIT_MARKER} {recheck} s: use it normally. Press Enter to revert sooner."
+        );
+        // Anything typed (or the app closing) in the meantime reverts.
+        keep = match rx.recv_timeout(Duration::from_secs(recheck)) {
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                println!(
+                    "{RECHECK_MARKER} still good? Type 'keep' + Enter within {seconds} s, or it reverts."
+                );
+                kept(seconds)
+            }
+            _ => false,
+        };
+    }
+    if keep {
+        println!(
+            "Kept until reboot. Make it permanent with:\n  sudo monitor-oc apply {} {}{}",
+            conn.name,
+            target.mode,
+            if target.opts.preferred {
+                " --preferred"
+            } else {
+                ""
+            }
+        );
+    } else {
+        conn.reset_override()?;
+        println!("Reverted to the monitor's own EDID.");
     }
     Ok(())
 }

@@ -10,6 +10,7 @@ mod demo;
 mod gamepad;
 mod jobs;
 mod pages;
+mod panel_test;
 mod prefs;
 mod theme;
 mod updates;
