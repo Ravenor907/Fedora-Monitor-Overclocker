@@ -74,8 +74,9 @@ Each file has a `.sha256` next to it (`sha256sum -c monitor-oc-x86_64.sha256`).
 - If you would rather use a terminal: `monitor-oc --help` lists every command, and
   `monitor-oc doctor` checks whether your system is ready (see [Diagnostics](#diagnostics)).
 
-If `install` says `~/.local/bin` is not on your PATH, the menu entry still works; add the line it
-prints to `~/.bashrc` to type `monitor-oc` in a terminal. Commands that need root have to be given
+If `~/.local/bin` is not on your PATH (the default on SteamOS), `install` adds it in your shell's
+startup file (`~/.bashrc`, `~/.zshrc` or fish's `conf.d`), so `monitor-oc` works in any new
+terminal; `uninstall` takes that line out again. Commands that need root have to be given
 the full path, because `sudo` ignores your PATH on many systems:
 `sudo ~/.local/bin/monitor-oc ...`.
 

@@ -221,6 +221,91 @@ fn quietly(cmd: &[&str]) {
     }
 }
 
+const PATH_BEGIN: &str = "# >>> monitor-oc: put ~/.local/bin on PATH >>>";
+const PATH_END: &str = "# <<< monitor-oc <<<";
+
+/// The startup file of the user's shell and the lines that put `~/.local/bin`
+/// on PATH there. bash is the default on SteamOS and Bazzite.
+fn shell_rc(home: &Path, shell: &str) -> (PathBuf, &'static str) {
+    match Path::new(shell).file_name().and_then(|n| n.to_str()) {
+        Some("zsh") => (
+            home.join(".zshrc"),
+            "export PATH=\"$HOME/.local/bin:$PATH\"",
+        ),
+        Some("fish") => (
+            home.join(".config/fish/conf.d/monitor-oc.fish"),
+            "fish_add_path -g $HOME/.local/bin",
+        ),
+        _ => (
+            home.join(".bashrc"),
+            "case \":$PATH:\" in *\":$HOME/.local/bin:\"*) ;; *) export PATH=\"$HOME/.local/bin:$PATH\" ;; esac",
+        ),
+    }
+}
+
+/// `text` with monitor-oc's PATH block removed.
+fn strip_path_block(text: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for line in text.lines() {
+        if line == PATH_BEGIN {
+            inside = true;
+        } else if inside && line == PATH_END {
+            inside = false;
+        } else if !inside {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Add `~/.local/bin` to PATH in the shell's startup file (once). Returns the
+/// file when it changed.
+fn add_to_path(home: &Path, shell: &str) -> Result<Option<PathBuf>> {
+    let (rc, line) = shell_rc(home, shell);
+    let old = match fs::read_to_string(&rc) {
+        Ok(t) => t,
+        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", rc.display())),
+    };
+    if old.contains(PATH_BEGIN) {
+        return Ok(None);
+    }
+    let mut new = old.clone();
+    if !new.is_empty() && !new.ends_with('\n') {
+        new.push('\n');
+    }
+    new.push_str(&format!("{PATH_BEGIN}\n{line}\n{PATH_END}\n"));
+    if let Some(dir) = rc.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    fs::write(&rc, new).with_context(|| format!("writing {}", rc.display()))?;
+    Ok(Some(rc))
+}
+
+/// Remove the PATH block from every startup file `install` may have used.
+fn remove_from_path(home: &Path) -> Result<Vec<PathBuf>> {
+    let mut changed = Vec::new();
+    for shell in ["bash", "zsh", "fish"] {
+        let (rc, _) = shell_rc(home, shell);
+        let Ok(text) = fs::read_to_string(&rc) else {
+            continue;
+        };
+        if !text.contains(PATH_BEGIN) {
+            continue;
+        }
+        let stripped = strip_path_block(&text);
+        if shell == "fish" && stripped.trim().is_empty() {
+            fs::remove_file(&rc).with_context(|| format!("removing {}", rc.display()))?;
+        } else {
+            fs::write(&rc, stripped).with_context(|| format!("writing {}", rc.display()))?;
+        }
+        changed.push(rc);
+    }
+    Ok(changed)
+}
+
 fn on_path(dir: &Path) -> bool {
     std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d == dir))
 }
@@ -267,12 +352,25 @@ pub fn install() -> Result<()> {
 
     let bin_dir = paths.binary.parent().unwrap_or(&paths.home);
     if !on_path(bin_dir) {
-        println!(
-            "\nNote: {} is not on your PATH, so a terminal will not find `monitor-oc`\n\
-             yet. To fix that, add this line to ~/.bashrc and open a new terminal:\n  \
-             export PATH=\"$HOME/.local/bin:$PATH\"",
-            paths.show(bin_dir)
-        );
+        let shell = std::env::var("SHELL").unwrap_or_default();
+        match add_to_path(&paths.home, &shell) {
+            Ok(Some(rc)) => println!(
+                "\nAdded {} to your PATH in {}. Open a new terminal to use `monitor-oc`\n\
+                 there (or run it now as {}).",
+                paths.show(bin_dir),
+                paths.show(&rc),
+                paths.show(&paths.binary)
+            ),
+            Ok(None) => println!(
+                "\nOpen a new terminal to use `monitor-oc` there (or run it now as {}).",
+                paths.show(&paths.binary)
+            ),
+            Err(e) => println!(
+                "\nNote: could not add {} to your PATH ({e:#}). Run it as {}.",
+                paths.show(bin_dir),
+                paths.show(&paths.binary)
+            ),
+        }
     }
     Ok(())
 }
@@ -298,6 +396,7 @@ pub fn uninstall(purge: bool) -> Result<()> {
     }
 
     let mut removed = remove_files(&paths)?;
+    let path_files = remove_from_path(&paths.home)?;
     refresh_menus(&paths);
     let screen = gamescope::Paths::for_current_user()?;
     if purge {
@@ -312,12 +411,15 @@ pub fn uninstall(purge: bool) -> Result<()> {
         }
     }
 
-    if removed.is_empty() {
+    if removed.is_empty() && path_files.is_empty() {
         println!("monitor-oc is not installed for this user; nothing to remove.");
     } else {
         println!("Removed:");
         for path in &removed {
             println!("  {}", paths.show(path));
+        }
+        for rc in &path_files {
+            println!("  the PATH line monitor-oc added to {}", paths.show(rc));
         }
     }
     if purge && removed.contains(&screen.script) {
@@ -492,5 +594,42 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success() && text.trim().is_empty(), "{text}");
+    }
+
+    #[test]
+    fn path_block_added_once_and_removed_cleanly() {
+        let home = temp_dir("path");
+        let rc = home.join(".bashrc");
+        fs::write(&rc, "alias ll='ls -l'").unwrap();
+        assert_eq!(add_to_path(&home, "/bin/bash").unwrap(), Some(rc.clone()));
+        assert_eq!(add_to_path(&home, "/bin/bash").unwrap(), None);
+        let text = fs::read_to_string(&rc).unwrap();
+        assert_eq!(text.matches(PATH_BEGIN).count(), 1);
+        assert!(text.starts_with("alias ll='ls -l'\n# >>> monitor-oc"));
+        assert_eq!(remove_from_path(&home).unwrap(), vec![rc.clone()]);
+        assert_eq!(fs::read_to_string(&rc).unwrap(), "alias ll='ls -l'\n");
+
+        add_to_path(&home, "/usr/bin/fish").unwrap();
+        let fish = home.join(".config/fish/conf.d/monitor-oc.fish");
+        assert!(fish.exists());
+        remove_from_path(&home).unwrap();
+        assert!(!fish.exists());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn bash_path_line_is_valid_and_idempotent() {
+        let (_, line) = shell_rc(Path::new("/h"), "bash");
+        let out = Command::new("bash")
+            .args([
+                "-c",
+                &format!("HOME=/h; PATH=/usr/bin; {line}; {line}; echo $PATH"),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "/h/.local/bin:/usr/bin"
+        );
     }
 }
