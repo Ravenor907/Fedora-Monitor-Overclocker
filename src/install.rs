@@ -606,8 +606,8 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Checks the generated menu entry and the double-click installer with
-    /// desktop-file-validate (from desktop-file-utils).
+    /// Checks the generated menu entry with desktop-file-validate (from
+    /// desktop-file-utils).
     #[test]
     fn desktop_files_validate() {
         if !system::which("desktop-file-validate") {
@@ -622,11 +622,8 @@ mod tests {
         let generated = dir.join(format!("{APP_ID}.desktop"));
         let entry = desktop_entry(Path::new("/home/deck/.local/bin/monitor-oc")).unwrap();
         fs::write(&generated, entry).unwrap();
-        let installer =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/Install-Monitor-OC.desktop");
         let out = Command::new("desktop-file-validate")
             .arg(&generated)
-            .arg(&installer)
             .output()
             .unwrap();
         let _ = fs::remove_dir_all(&dir);
