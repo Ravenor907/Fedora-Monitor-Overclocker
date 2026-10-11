@@ -4,6 +4,7 @@ mod edid;
 mod gamescope;
 #[cfg(feature = "gui")]
 mod gui;
+mod install;
 mod plan;
 mod service;
 mod state;
@@ -112,6 +113,15 @@ enum Cmd {
         /// Fill the screen (always on in Game Mode).
         #[arg(long)]
         fullscreen: bool,
+    },
+    /// Install Monitor OC for your user: ~/.local/bin/monitor-oc and an app menu
+    /// entry (which Steam can add for Game Mode). Re-run to upgrade. No sudo.
+    Install,
+    /// Remove what `install` added.
+    Uninstall {
+        /// Also delete the built-in screen settings and ~/.config/monitor-oc.
+        #[arg(long)]
+        purge: bool,
     },
 }
 
@@ -240,6 +250,8 @@ fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Install => install::install(),
+        Cmd::Uninstall { purge } => install::uninstall(purge),
     }
 }
 

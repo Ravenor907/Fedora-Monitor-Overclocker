@@ -18,7 +18,7 @@ use eframe::egui;
 
 /// Window and Wayland app id; the .desktop file has the same name so docks and
 /// Steam match the window to it.
-pub const APP_ID: &str = "io.github.ravenor907.MonitorOC";
+pub use crate::install::APP_ID;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Page {

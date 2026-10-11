@@ -1,6 +1,6 @@
 [package]
 name = "monitor-oc"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Monitor refresh-rate overclocking via EDID overrides for SteamOS, Fedora and other Linux distros"
 license = "GPL-3.0-or-later"
