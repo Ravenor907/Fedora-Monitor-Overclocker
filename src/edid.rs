@@ -246,9 +246,11 @@ impl Edid {
         (d[0] == 0 && d[1] == 0).then(|| (d[3], d))
     }
 
-    pub fn name(&self) -> Option<String> {
+    /// Text of the first display descriptor with this tag (0xFC = product
+    /// name, 0xFE = data string), cut at the newline terminator.
+    pub fn descriptor_text(&self, tag: u8) -> Option<String> {
         (0..4).find_map(|slot| match self.display_descriptor(slot) {
-            Some((0xFC, d)) => {
+            Some((t, d)) if t == tag => {
                 let text: String = d[5..18]
                     .iter()
                     .take_while(|&&c| c != 0x0A)
@@ -258,6 +260,10 @@ impl Edid {
             }
             _ => None,
         })
+    }
+
+    pub fn name(&self) -> Option<String> {
+        self.descriptor_text(0xFC)
     }
 
     /// CTA blocks as (block index, DTD start offset).

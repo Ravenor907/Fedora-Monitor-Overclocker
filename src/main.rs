@@ -1,14 +1,21 @@
+mod doctor;
 mod drm;
 mod edid;
+mod gamescope;
+#[cfg(feature = "gui")]
+mod gui;
+mod install;
+mod plan;
 mod service;
 mod state;
 mod system;
 mod timing;
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use drm::Connector;
-use edid::{Dtd, Edid, Location};
+use edid::Edid;
+use plan::Plan;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -24,7 +31,7 @@ use timing::{Mode, Strategy};
 #[command(version, propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
-    command: Cmd,
+    command: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -84,6 +91,59 @@ enum Cmd {
     },
     /// Show what monitor-oc has installed and whether it is active.
     Status,
+    /// Overclock a handheld's built-in screen in Game Mode (SteamOS, Bazzite).
+    ///
+    /// Gamescope builds the built-in screen's refresh rates itself, so this
+    /// extends Gamescope's profile instead of the EDID. Runs as your user, no sudo.
+    Panel {
+        #[command(subcommand)]
+        command: PanelCmd,
+    },
+    /// Check this system and explain anything that will stop an overclock working.
+    Doctor,
+    /// Open the graphical app (also what running monitor-oc without arguments does).
+    #[cfg(feature = "gui")]
+    Gui {
+        /// Show made-up hardware (a ROG Ally X with a 1440p monitor); changes nothing.
+        #[arg(long)]
+        demo: bool,
+        /// Page to open first.
+        #[arg(long, value_enum)]
+        page: Option<gui::Page>,
+        /// Fill the screen (always on in Game Mode).
+        #[arg(long)]
+        fullscreen: bool,
+    },
+    /// Install Monitor OC for your user: ~/.local/bin/monitor-oc and an app menu
+    /// entry (which Steam can add for Game Mode). Re-run to upgrade. No sudo.
+    Install,
+    /// Remove what `install` added.
+    Uninstall {
+        /// Also delete the built-in screen settings and ~/.config/monitor-oc.
+        #[arg(long)]
+        purge: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PanelCmd {
+    /// Show the built-in screen, its stock range and what is configured.
+    Status,
+    /// Allow up to HZ for the next Game Mode session only (a safe trial).
+    Try {
+        /// Highest refresh rate to offer, e.g. 130.
+        hz: u32,
+        #[arg(long, value_enum, default_value_t = gamescope::Method::Clock)]
+        method: gamescope::Method,
+    },
+    /// Keep the trial rate permanently.
+    Confirm,
+    /// Drop the trial and keep the previous limit.
+    Discard,
+    /// Go back to the stock range.
+    Reset,
+    /// Delete monitor-oc's Gamescope profile entirely.
+    Remove,
 }
 
 #[derive(Args)]
@@ -113,14 +173,6 @@ struct Target {
     force: bool,
 }
 
-struct Plan {
-    edid: Edid,
-    dtd: Dtd,
-    strategy: Strategy,
-    location: Location,
-    limit_changes: Vec<String>,
-}
-
 fn main() {
     if let Err(e) = run(Cli::parse()) {
         eprintln!("error: {e:#}");
@@ -129,7 +181,27 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    match cli.command {
+    let Some(command) = cli.command else {
+        // Launched from a menu or Steam: open the app. From a terminal
+        // without a graphical session: show the commands.
+        #[cfg(feature = "gui")]
+        if gui::display_available() {
+            return gui::run(gui::Options::default());
+        }
+        Cli::command().print_help()?;
+        std::process::exit(2);
+    };
+    match command {
+        #[cfg(feature = "gui")]
+        Cmd::Gui {
+            demo,
+            page,
+            fullscreen,
+        } => gui::run(gui::Options {
+            demo,
+            page,
+            fullscreen,
+        }),
         Cmd::Detect => detect(),
         Cmd::Show { source } => show(&source),
         Cmd::Generate {
@@ -165,6 +237,88 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Remove { connector, dry_run } => remove(connector.as_deref(), dry_run),
         Cmd::Reapply { boot } => reapply(boot),
         Cmd::Status => status(),
+        Cmd::Panel { command } => panel(command),
+        Cmd::Doctor => {
+            for c in doctor::checks() {
+                let tag = match c.level {
+                    doctor::Level::Ok => " ok ",
+                    doctor::Level::Info => "info",
+                    doctor::Level::Warn => "WARN",
+                    doctor::Level::Fail => "FAIL",
+                };
+                println!("[{tag}] {:<22} {}", c.title, c.detail);
+            }
+            Ok(())
+        }
+        Cmd::Install => install::install(),
+        Cmd::Uninstall { purge } => install::uninstall(purge),
+    }
+}
+
+fn panel(command: PanelCmd) -> Result<()> {
+    let paths = gamescope::Paths::for_current_user()?;
+    match command {
+        PanelCmd::Status => {
+            let panel = gamescope::Panel::detect()?;
+            println!("Built-in screen: {} {}", panel.connector, panel.id.label());
+            if !gamescope::gamescope_installed() {
+                println!("Gamescope is not installed, so there is no Game Mode to configure.");
+                return Ok(());
+            }
+            match gamescope::stock_profile(&panel.id) {
+                Some(s) => println!(
+                    "Stock range:     {}-{} Hz ({})",
+                    s.min_hz,
+                    s.max_hz,
+                    s.pretty_name
+                        .unwrap_or_else(|| s.file.display().to_string())
+                ),
+                None => println!("Stock range:     from the EDID ({:?} Hz)", panel.edid_rates),
+            }
+            for c in doctor::checks()
+                .into_iter()
+                .filter(|c| c.title == "Built-in overclock" || c.title == "Gamescope profile")
+            {
+                println!("{:<16} {}", format!("{}:", c.title), c.detail);
+            }
+            Ok(())
+        }
+        PanelCmd::Try { hz, method } => {
+            let panel = gamescope::Panel::detect()?;
+            if !gamescope::gamescope_installed() {
+                bail!("Gamescope is not installed; this only applies to Game Mode");
+            }
+            gamescope::try_rate(&panel, &paths, hz, method)?;
+            println!(
+                "Trial armed: up to {hz} Hz for the next Game Mode session only.\n\n\
+                 1. Switch to Game Mode (on SteamOS: Return to Gaming Mode).\n\
+                 2. Open Quick Access (...) > Performance and raise Refresh Rate to {hz} Hz.\n\
+                 3. If it looks right, come back and run `monitor-oc panel confirm`.\n\n\
+                 If the screen goes black, hold the power button to restart: the trial is\n\
+                 dropped automatically on the next start and the stock range returns."
+            );
+            Ok(())
+        }
+        PanelCmd::Confirm => {
+            let hz = gamescope::confirm(&paths)?;
+            println!("Confirmed: Game Mode now offers up to {hz} Hz on the built-in screen.");
+            Ok(())
+        }
+        PanelCmd::Discard => {
+            gamescope::discard(&paths)?;
+            println!("Trial discarded.");
+            Ok(())
+        }
+        PanelCmd::Reset => {
+            gamescope::reset(&paths)?;
+            println!("Back to the stock range from the next Game Mode start.");
+            Ok(())
+        }
+        PanelCmd::Remove => {
+            gamescope::remove(&paths)?;
+            println!("Removed monitor-oc's Gamescope profile; restart Game Mode to finish.");
+            Ok(())
+        }
     }
 }
 
@@ -221,17 +375,7 @@ fn save_original(conn: &Connector, edid: &Edid) -> Result<()> {
 }
 
 fn build_plan(base: &Edid, mode: &Mode, opts: &BuildOpts) -> Result<Plan> {
-    let (dtd, strategy) = timing::build(base, mode, opts.timing)?;
-    let mut edid = base.clone();
-    let limit_changes = edid.widen_range_limits(&dtd);
-    let location = edid.add_timing(&dtd, opts.preferred)?;
-    Ok(Plan {
-        edid,
-        dtd,
-        strategy,
-        location,
-        limit_changes,
-    })
+    plan::build(base, mode, opts.timing, opts.preferred)
 }
 
 fn print_plan(mode: &Mode, plan: &Plan, conn: Option<&Connector>) {
@@ -241,23 +385,8 @@ fn print_plan(mode: &Mode, plan: &Plan, conn: Option<&Connector>) {
     for change in &plan.limit_changes {
         println!("Range:      {change}");
     }
-    if matches!(plan.location, Location::DisplayId { .. }) && plan.strategy != Strategy::CvtRb2 {
-        println!(
-            "Note:       stored as a DisplayID timing; if the monitor rejects it, also try --timing cvt-rb2."
-        );
-    }
-    let mhz = plan.dtd.clock_mhz();
-    if conn.is_some_and(|c| c.name.starts_with("HDMI")) && mhz > 600.0 {
-        println!(
-            "Note:       {mhz:.0} MHz is above HDMI 2.0's 600 MHz limit; this only works over HDMI 2.1 (FRL) on both ends."
-        );
-    }
-    if (plan.dtd.refresh_hz() - mode.hz).abs() > 0.05 {
-        println!(
-            "Note:       the EDID's 10 kHz clock step gives {:.3} Hz instead of exactly {}.",
-            plan.dtd.refresh_hz(),
-            mode.hz
-        );
+    for note in plan.notes(mode, conn.map(|c| c.name.as_str())) {
+        println!("Note:       {note}");
     }
 }
 
@@ -268,6 +397,14 @@ fn guard(conn: &Connector, force: bool) -> Result<()> {
         eprintln!(
             "warning: the NVIDIA proprietary driver ignores kernel EDID overrides. Use nvidia-settings \
              (CustomEDID) instead, or the nouveau/NVK stack."
+        );
+    }
+    if conn.is_internal() && !force && gamescope::gamescope_installed() {
+        bail!(
+            "{} is a built-in screen. In Game Mode, Gamescope generates its refresh rates itself and \
+             ignores EDID changes, so use `monitor-oc panel try <HZ>` instead (no sudo needed). \
+             Pass --force to change the EDID anyway (affects Desktop Mode only, and on AMD only after a reboot).",
+            conn.name
         );
     }
     if conn.is_internal() && !force {

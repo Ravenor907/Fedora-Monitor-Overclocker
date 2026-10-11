@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b445c"/>
+      <stop offset="1" stop-color="#1f2534"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0b111f"/>
+      <stop offset="1" stop-color="#18213a"/>
+    </linearGradient>
+    <linearGradient id="accent" gradientUnits="userSpaceOnUse" x1="50" y1="0" x2="206" y2="0">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="0.55" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#f43f5e"/>
+    </linearGradient>
+  </defs>
+  <!-- stand -->
+  <path d="M110 192h36l6 22h-48z" fill="#2c3346"/>
+  <rect x="78" y="208" width="100" height="16" rx="8" fill="#465070"/>
+  <!-- monitor -->
+  <rect x="18" y="34" width="220" height="164" rx="30" fill="url(#body)"/>
+  <rect x="19" y="35" width="218" height="162" rx="29" fill="none" stroke="#ffffff" stroke-opacity="0.16" stroke-width="2"/>
+  <rect x="34" y="50" width="188" height="132" rx="17" fill="url(#screen)"/>
+  <!-- speed gauge -->
+  <path d="M62.2 169.9A70 70 0 1 1 193.8 169.9" fill="none" stroke="url(#accent)" stroke-width="18" stroke-linecap="round"/>
+  <path d="M128 146L170.6 116.2" stroke="#ffffff" stroke-width="11" stroke-linecap="round"/>
+  <circle cx="128" cy="146" r="13" fill="#ffffff"/>
+  <circle cx="128" cy="146" r="5" fill="#18213a"/>
+</svg>

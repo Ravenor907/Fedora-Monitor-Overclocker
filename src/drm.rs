@@ -153,3 +153,13 @@ pub fn nvidia_loaded() -> bool {
 pub fn is_steam_deck() -> bool {
     read_trimmed(Path::new("/sys/class/dmi/id/board_vendor")).as_deref() == Some("Valve")
 }
+
+/// Vendor and model from DMI, e.g. "ASUSTeK COMPUTER INC. ROG Ally X RC72LA".
+pub fn hardware_name() -> Option<String> {
+    let dmi =
+        |f: &str| read_trimmed(&Path::new("/sys/class/dmi/id").join(f)).filter(|s| !s.is_empty());
+    match (dmi("sys_vendor"), dmi("product_name")) {
+        (Some(v), Some(p)) => Some(format!("{v} {p}")),
+        (v, p) => v.or(p),
+    }
+}

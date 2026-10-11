@@ -7,7 +7,10 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   check:
@@ -17,26 +20,99 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      # luajit runs the Gamescope Lua harness and desktop-file-utils validates
+      # the menu entries; those tests fail in CI when their tool is missing.
+      # The GUI needs no -dev packages: eframe loads X11, Wayland and OpenGL
+      # at runtime.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends luajit desktop-file-utils shellcheck
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --no-default-features -- -D warnings
       - run: cargo test
+      - run: cargo test --no-default-features
+      - run: shellcheck install.sh
+      - run: desktop-file-validate packaging/Install-Monitor-OC.desktop
 
   build:
     needs: check
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The app (GUI + CLI). Built on the oldest supported Ubuntu so it
+          # only needs glibc 2.35, which SteamOS, Fedora and Bazzite all exceed.
+          - name: monitor-oc-x86_64
+            os: ubuntu-22.04
+            target: ""
+            args: ""
+            out: target/release/monitor-oc
+          # Command line only and fully static: runs on any x86_64 Linux.
+          - name: monitor-oc-x86_64-musl
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            args: --no-default-features --target x86_64-unknown-linux-musl
+            out: target/x86_64-unknown-linux-musl/release/monitor-oc
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl
-      # Static binary: runs unchanged on SteamOS, Fedora, Bazzite, Arch, Ubuntu...
-      - run: cargo build --release --target x86_64-unknown-linux-musl
-      - run: cp target/x86_64-unknown-linux-musl/release/monitor-oc monitor-oc-x86_64
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - run: cargo build --release --locked ${{ matrix.args }}
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp "${{ matrix.out }}" "dist/${{ matrix.name }}"
+          cd dist
+          sha256sum "${{ matrix.name }}" > "${{ matrix.name }}.sha256"
+          cat "${{ matrix.name }}.sha256"
+          "./${{ matrix.name }}" --version
+      # Install into a throwaway home and remove again. A build with the
+      # `gui` subcommand must add the menu entry; a CLI-only build must not.
+      - name: Smoke-test install and uninstall
+        env:
+          HOME: ${{ runner.temp }}/home
+        run: |
+          mkdir -p "$HOME"
+          bin="dist/${{ matrix.name }}"
+          entry="$HOME/.local/share/applications/io.github.ravenor907.MonitorOC.desktop"
+          "$bin" install
+          find "$HOME" -type f | sort
+          test -x "$HOME/.local/bin/monitor-oc"
+          if "$bin" help gui >/dev/null 2>&1; then test -f "$entry"; else test ! -e "$entry"; fi
+          "$HOME/.local/bin/monitor-oc" uninstall
+          test -z "$(find "$HOME" -type f ! -name mimeinfo.cache)"
       - uses: actions/upload-artifact@v4
         with:
-          name: monitor-oc-x86_64
-          path: monitor-oc-x86_64
-      - if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+          name: ${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          files: monitor-oc-x86_64
+          path: dist
+          merge-multiple: true
+      - run: ls -l dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/monitor-oc-x86_64
+            dist/monitor-oc-x86_64.sha256
+            dist/monitor-oc-x86_64-musl
+            dist/monitor-oc-x86_64-musl.sha256
+            install.sh
+            packaging/Install-Monitor-OC.desktop
