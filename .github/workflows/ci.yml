@@ -56,7 +56,13 @@ jobs:
           useradd -m deck
           cp -r "$GITHUB_WORKSPACE" /home/deck/MonitorOC
           chown -R deck:deck /home/deck/MonitorOC
-          su deck -c 'mkdir -p ~/Desktop && bash ~/MonitorOC/scripts/install.sh'
+          # The last lines of a failure become annotations, readable on the PR.
+          if ! su deck -c 'mkdir -p ~/Desktop && bash ~/MonitorOC/scripts/install.sh' > install.log 2>&1; then
+            cat install.log
+            grep -v '^\s*$' install.log | tail -n 25 | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
+          cat install.log
       - name: Check the install
         run: |
           su deck -c '~/.local/bin/monitor-oc --version'
