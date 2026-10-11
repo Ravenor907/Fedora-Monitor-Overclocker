@@ -25,8 +25,9 @@ else
     rustup update stable --no-self-update > /dev/null 2>&1 || true
 fi
 
-# Rust needs a C linker, and SteamOS has none. Zig (from PyPI, in a private
-# Python environment) stands in for it there, through cargo-zigbuild.
+# Rust needs a C compiler to link, and SteamOS has none. Zig (from PyPI, in a
+# private Python environment) stands in for it there: `cc` and `c++` below run
+# it through cargo-zigbuild, which smooths over the flags Rust passes.
 if [ "${MONITOR_OC_LINKER:-}" = zig ] || ! command -v cc > /dev/null 2>&1; then
     VENV="$TOOLS/venv"
     if [ ! -x "$VENV/bin/cargo-zigbuild" ]; then
@@ -40,15 +41,20 @@ if [ "${MONITOR_OC_LINKER:-}" = zig ] || ! command -v cc > /dev/null 2>&1; then
         fi
         "$VENV/bin/python" -m pip install -q --upgrade pip cargo-zigbuild >&2
     fi
-    export PATH="$VENV/bin:$PATH"
-    say "Building Monitor OC $VERSION (a few minutes)"
-    (cd "$SRC" && cargo zigbuild --release --locked --target x86_64-unknown-linux-gnu.2.35) >&2
-    out="$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/release/monitor-oc"
-else
-    say "Building Monitor OC $VERSION (a few minutes)"
-    (cd "$SRC" && cargo build --release --locked) >&2
-    out="$CARGO_TARGET_DIR/release/monitor-oc"
+    SHIM="$TOOLS/zig-cc"
+    mkdir -p "$SHIM"
+    for tool in cc c++; do
+        printf '#!/bin/sh\nexec "%s" zig %s -- -target x86_64-linux-gnu.2.35 "$@"\n' \
+            "$VENV/bin/cargo-zigbuild" "$tool" > "$SHIM/$tool"
+        chmod 755 "$SHIM/$tool"
+    done
+    export PATH="$SHIM:$VENV/bin:$PATH"
+    export CC="$SHIM/cc" CXX="$SHIM/c++" CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$SHIM/cc"
 fi
+
+say "Building Monitor OC $VERSION (a few minutes)"
+(cd "$SRC" && cargo build --release --locked) >&2
+out="$CARGO_TARGET_DIR/release/monitor-oc"
 
 dest="$DATA/build/monitor-oc-$VERSION"
 cp "$out" "$dest"
