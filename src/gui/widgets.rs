@@ -638,7 +638,7 @@ pub fn paint_icon(ui: &Ui, rect: Rect, icon: Icon, color: Color32) {
                 .collect();
             let tip = points[points.len() - 1];
             painter.add(Shape::line(points, stroke));
-            let back = -1.2 + 5.0;
+            let back: f32 = -1.2 + 5.0;
             let along = vec2(-back.sin(), back.cos());
             let out = vec2(back.cos(), back.sin());
             let len = s * 0.2;
