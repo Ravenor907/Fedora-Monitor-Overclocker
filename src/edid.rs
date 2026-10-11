@@ -300,7 +300,7 @@ impl Edid {
                 let (tag, len) = (self.bytes[base + pos], self.bytes[base + pos + 2] as usize);
                 let payload = base + pos + 3;
                 if matches!(tag, DID_TYPE1 | DID_TYPE7) && pos + 3 + len <= section_end {
-                    for t in self.bytes[payload..payload + len].chunks_exact(20) {
+                    for t in self.bytes[payload..payload + len].as_chunks::<20>().0 {
                         out.push((
                             Location::DisplayId { block },
                             decode_displayid(t, tag == DID_TYPE7),
