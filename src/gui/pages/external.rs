@@ -5,9 +5,9 @@ use super::{Action, Dialog, View, columns, header, res, row};
 use crate::edid::Location;
 use crate::gui::data::Monitor;
 use crate::gui::jobs::{Kind as JobKind, Outcome, TEST_SECONDS};
-use crate::gui::theme::{TOUCH, bold, font, palette};
+use crate::gui::theme::{TOUCH, bold, palette};
 use crate::gui::widgets::{
-    Button, Kind, banner, big_number, button_if, caption, card, chip, dim, facts, faint, segmented,
+    Button, Kind, big_number, button_if, caption, card, chip, dim, facts, faint, picker, segmented,
     slider, tag, toggle,
 };
 use crate::plan::{self, Plan};
@@ -27,13 +27,16 @@ pub struct State {
 }
 
 impl State {
-    fn reset_for(&mut self, m: &Monitor) {
+    /// Fresh settings for `m`. In Game Mode the new mode is made the preferred
+    /// one by default, since Gamescope uses that on external screens.
+    fn reset_for(&mut self, m: &Monitor, game_mode: bool) {
         let native = m.resolutions().first().map_or(60.0, |r| r.2);
         *self = State {
             connector: m.connector.clone(),
             hz: native.round() as u32 + 11,
             strategy: Some(Strategy::Auto),
             switch_mode: true,
+            preferred: game_mode,
             log_open: self.log_open,
             ..State::default()
         };
@@ -70,19 +73,9 @@ pub fn show(ui: &mut Ui, st: &mut State, view: &View, out: &mut Vec<Action>) {
         log_panel(ui, st, view);
         return;
     }
-    if view.game_mode {
-        banner(ui, p.warn, |ui| {
-            ui.label(RichText::new("Needs Desktop Mode").font(bold(18.0)));
-            dim(
-                ui,
-                "Changing a monitor's EDID needs an administrator password prompt, which Game Mode \
-                 can't show. Switch to Desktop Mode to test or apply; the preview works here.",
-            );
-        });
-    }
 
     if !monitors.iter().any(|m| m.connector == st.connector) {
-        st.reset_for(&monitors[0]);
+        st.reset_for(&monitors[0], view.game_mode);
     }
     if monitors.len() > 1 {
         let mut chosen = monitors
@@ -99,7 +92,7 @@ pub fn show(ui: &mut Ui, st: &mut State, view: &View, out: &mut Vec<Action>) {
             .map(|(i, l)| (i, l.as_str()))
             .collect();
         if segmented(ui, &mut chosen, &options) {
-            st.reset_for(&monitors[chosen]);
+            st.reset_for(&monitors[chosen], view.game_mode);
         }
     }
     let Some(monitor) = monitors.iter().find(|m| m.connector == st.connector) else {
@@ -140,24 +133,24 @@ struct Gate {
     blocked: Option<&'static str>,
     busy: bool,
     kscreen: bool,
+    game_mode: bool,
 }
 
 impl Gate {
     fn new(view: &View) -> Gate {
         let tools = view.snap.tools;
         Gate {
-            blocked: if view.game_mode {
-                Some("Needs Desktop Mode: Game Mode can't show the password prompt.")
-            } else if !tools.pkexec && !tools.root {
+            blocked: if !tools.sudo && !tools.pkexec && !tools.root {
                 Some(
-                    "pkexec (polkit) isn't installed, so the app can't ask for your password. \
-                     Use the terminal command below instead.",
+                    "Neither sudo nor pkexec is installed, so the app can't run the change as an \
+                     administrator. Use the terminal command below instead.",
                 )
             } else {
                 None
             },
             busy: view.job.is_some_and(|j| j.running()),
-            kscreen: tools.kscreen_doctor,
+            kscreen: tools.kscreen_doctor && !view.game_mode,
+            game_mode: view.game_mode,
         }
     }
 
@@ -217,20 +210,11 @@ fn editor(ui: &mut Ui, st: &mut State, m: &Monitor) {
         caption(ui, "New mode", p.text_faint);
         ui.add_space(2.0);
         ui.label(RichText::new("Resolution").color(p.text_dim));
-        let (w, h, _) = resolutions[st.res.min(resolutions.len() - 1)];
-        egui::ComboBox::from_id_salt("resolution")
-            .width(ui.available_width())
-            .height(320.0)
-            .selected_text(RichText::new(res(w, h)).font(font(16.0)))
-            .show_ui(ui, |ui| {
-                for (i, (w, h, hz)) in resolutions.iter().enumerate() {
-                    ui.selectable_value(
-                        &mut st.res,
-                        i,
-                        format!("{}   (now up to {hz:.0} Hz)", res(w, h)),
-                    );
-                }
-            });
+        let labels: Vec<String> = resolutions
+            .iter()
+            .map(|(w, h, hz)| format!("{}  ·  now up to {hz:.0} Hz", res(w, h)))
+            .collect();
+        picker(ui, &mut st.res, &labels);
         let native_hz = resolutions[st.res.min(resolutions.len() - 1)].2.round() as u32;
         let (lo, hi) = (native_hz + 1, (native_hz as f64 * 1.6).round() as u32);
         st.hz = st.hz.clamp(lo, hi);
@@ -427,6 +411,10 @@ fn more_actions(
                 faint(ui, note);
             });
         });
+    }
+    // A terminal command is no use in Game Mode.
+    if gate.game_mode {
+        return;
     }
     card(ui, |ui| {
         caption(ui, "Prefer a terminal?", p.text_faint);

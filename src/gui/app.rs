@@ -74,6 +74,35 @@ pub struct App {
     panel_test: Option<PanelTest>,
     /// "Report a problem" being written: the text and the page it came from.
     report_draft: Option<(String, String)>,
+    /// The administrator password, typed in the app, kept for this session.
+    sudo_password: Option<String>,
+    /// A privileged command waiting for the password.
+    password_prompt: Option<PasswordPrompt>,
+    /// The running job was started with the password above.
+    job_used_password: bool,
+}
+
+/// What the administrator password is for.
+enum Pending {
+    Job(JobKind),
+    /// Uninstalling while external-monitor overrides are installed.
+    Uninstall,
+}
+
+impl Pending {
+    fn title(&self) -> String {
+        match self {
+            Pending::Job(kind) => kind.title(),
+            Pending::Uninstall => "Removing the external-monitor overrides".into(),
+        }
+    }
+}
+
+struct PasswordPrompt {
+    pending: Pending,
+    input: String,
+    /// The last password was wrong.
+    wrong: bool,
 }
 
 impl App {
@@ -104,6 +133,9 @@ impl App {
             healthy: setup.demo,
             panel_test: None,
             report_draft: None,
+            sudo_password: None,
+            password_prompt: None,
+            job_used_password: false,
             backend,
             events,
             snap: None,
@@ -203,6 +235,18 @@ impl App {
             }
             jobs::Event::Exit(outcome) => {
                 job.outcome = Some(outcome.clone());
+                if self.job_used_password && jobs::wrong_password(&self.log) {
+                    // Ask again; nothing ran.
+                    self.sudo_password = None;
+                    self.password_prompt = Some(PasswordPrompt {
+                        pending: Pending::Job(job.kind.clone()),
+                        input: String::new(),
+                        wrong: true,
+                    });
+                    self.focus_dialog = true;
+                    self.job = None;
+                    return;
+                }
                 if let Outcome::Failed(why) = &outcome {
                     let tail = self.log[self.log.len().saturating_sub(80)..].join("\n");
                     crate::report::auto(
@@ -221,10 +265,57 @@ impl App {
         }
     }
 
+    /// Uninstall from Settings. External-monitor overrides live outside the
+    /// home folder, so removing them needs the password, asked for here.
+    fn uninstall(&mut self) {
+        let needs_root = !self.setup.demo
+            && !crate::system::is_root()
+            && !crate::state::load().is_empty()
+            && self.snap.as_ref().is_some_and(|s| s.tools.sudo);
+        if needs_root && self.sudo_password.is_none() {
+            self.password_prompt = Some(PasswordPrompt {
+                pending: Pending::Uninstall,
+                input: String::new(),
+                wrong: false,
+            });
+            self.focus_dialog = true;
+            return;
+        }
+        let password = if needs_root {
+            self.sudo_password.clone()
+        } else {
+            None
+        };
+        self.updates.act(UpdateAction::Uninstall(password));
+    }
+
+    /// Privileged commands go through `sudo` with a password typed in the app
+    /// (Game Mode can't show a system password prompt), or pkexec where
+    /// there is no sudo.
     fn start_job(&mut self, kind: JobKind) {
         if self.job.as_ref().is_some_and(Job::running) {
             return;
         }
+        let in_app_password = !self.setup.demo
+            && !crate::system::is_root()
+            && self.snap.as_ref().is_some_and(|s| s.tools.sudo);
+        let password = if in_app_password {
+            match &self.sudo_password {
+                Some(p) => Some(p.clone()),
+                None => {
+                    self.password_prompt = Some(PasswordPrompt {
+                        pending: Pending::Job(kind),
+                        input: String::new(),
+                        wrong: false,
+                    });
+                    self.focus_dialog = true;
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        self.job_used_password = password.is_some();
         if let JobKind::Test { mode, .. } = &kind {
             self.verify.retarget(mode.hz.round() as u32);
         }
@@ -232,7 +323,7 @@ impl App {
         self.external.log_open = true;
         let id = self.next_job;
         self.next_job += 1;
-        self.job = Some(jobs::start(&self.backend, id, kind));
+        self.job = Some(jobs::start(&self.backend, id, kind, password));
         self.focus_dialog = true;
     }
 
@@ -489,10 +580,23 @@ impl App {
                 self.save_prefs();
             }
             caption(ui, "Theme", p.text_faint);
+            if self.setup.game_mode {
+                ui.add_space(4.0);
+                if ui
+                    .add(
+                        Button::new("Exit Monitor OC", Kind::Ghost)
+                            .min_width(ui.available_width())
+                            .height(40.0),
+                    )
+                    .clicked()
+                {
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
+                }
+            }
             if self.pad.as_ref().is_some_and(Gamepad::connected) {
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("A select  ·  B back  ·  LB/RB pages")
+                    RichText::new("A select  ·  B back  ·  LB/RB pages  ·  R stick scroll")
                         .font(font(13.0))
                         .color(p.text_faint),
                 );
@@ -561,6 +665,10 @@ impl App {
             self.panel_test_dialog(ctx);
             return;
         }
+        if self.password_prompt.is_some() {
+            self.password_dialog(ctx);
+            return;
+        }
         if self.report_draft.is_some() {
             self.report_dialog(ctx, out);
             return;
@@ -625,6 +733,16 @@ impl App {
                         vec![format!("{connector} goes back to its own EDID right away. Nothing was installed, so no reboot is needed.")],
                         "Drop it…".into(),
                         Kind::Danger,
+                    ),
+                    Dialog::RestartGameMode => (
+                        "Restart Game Mode?".into(),
+                        vec![
+                            "Steam closes and Game Mode starts again in a few seconds, loading \
+                             the new settings. Close any game first."
+                                .into(),
+                        ],
+                        "Restart Game Mode".into(),
+                        Kind::Primary,
                     ),
                     Dialog::Uninstall => (
                         "Uninstall Monitor OC?".into(),
@@ -695,7 +813,8 @@ impl App {
                     Some(Dialog::Apply { kind, .. }) | Some(Dialog::Remove(kind)) => {
                         out.push(Action::Run(kind))
                     }
-                    Some(Dialog::Uninstall) => out.push(Action::Update(UpdateAction::Uninstall)),
+                    Some(Dialog::Uninstall) => self.uninstall(),
+                    Some(Dialog::RestartGameMode) => self.backend.restart_game_mode(),
                     Some(Dialog::Testing) => {
                         out.push(Action::Update(UpdateAction::Channel(Channel::Testing)))
                     }
@@ -846,6 +965,96 @@ impl App {
         self.backend.refresh();
     }
 
+    /// The administrator password for a privileged command, typed in the app.
+    fn password_dialog(&mut self, ctx: &egui::Context) {
+        let p = palette(ctx);
+        let focus = std::mem::take(&mut self.focus_dialog);
+        let game_mode = self.setup.game_mode;
+        let Some(prompt) = self.password_prompt.as_mut() else {
+            return;
+        };
+        let mut decision = None;
+        let response = egui::Modal::new(Id::new("password"))
+            .frame(Self::modal_frame(ctx))
+            .backdrop_color(Color32::from_black_alpha(150))
+            .show(ctx, |ui| {
+                ui.set_width(520.0);
+                ui.label(
+                    RichText::new("Administrator password")
+                        .font(bold(22.0))
+                        .color(p.text),
+                );
+                ui.add_space(4.0);
+                dim(
+                    ui,
+                    format!(
+                        "{} changes system files, so it needs your password (the one sudo asks for). \
+                         It's kept only while Monitor OC is open.",
+                        prompt.pending.title()
+                    ),
+                );
+                if prompt.wrong {
+                    ui.label(RichText::new("That password didn't work. Try again.").color(p.bad));
+                }
+                ui.add_space(6.0);
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut prompt.input)
+                        .password(true)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Password"),
+                );
+                if focus {
+                    edit.request_focus();
+                }
+                if edit.gained_focus() {
+                    super::steam_keyboard();
+                }
+                if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !prompt.input.is_empty() {
+                    decision = Some(true);
+                }
+                faint(
+                    ui,
+                    if game_mode {
+                        "Press STEAM + X if the keyboard doesn't open. No password yet? Set one in \
+                         Desktop Mode: open Konsole and run passwd."
+                    } else {
+                        "No password yet? Open a terminal and run passwd."
+                    },
+                );
+                ui.add_space(10.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add_enabled(
+                            !prompt.input.is_empty(),
+                            Button::new("Continue", Kind::Primary),
+                        )
+                        .clicked()
+                    {
+                        decision = Some(true);
+                    }
+                    if ui.add(Button::new("Cancel", Kind::Secondary)).clicked() {
+                        decision = Some(false);
+                    }
+                });
+            });
+        if response.should_close() {
+            decision = decision.or(Some(false));
+        }
+        if let Some(go) = decision
+            && let Some(prompt) = self.password_prompt.take()
+        {
+            if go {
+                self.sudo_password = Some(prompt.input);
+                match prompt.pending {
+                    Pending::Job(kind) => self.start_job(kind),
+                    Pending::Uninstall => self.uninstall(),
+                }
+            } else {
+                self.toast(false, "Cancelled: no password was given.");
+            }
+        }
+    }
+
     /// "Report a problem": what went wrong, in the user's words.
     fn report_dialog(&mut self, ctx: &egui::Context, out: &mut Vec<Action>) {
         let p = palette(ctx);
@@ -884,6 +1093,9 @@ impl App {
                 );
                 if focus {
                     edit.request_focus();
+                }
+                if edit.gained_focus() {
+                    super::steam_keyboard();
                 }
                 ui.add_space(10.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1221,9 +1433,13 @@ fn outcome_message(job: &Job, outcome: &Outcome) -> (bool, String) {
         Outcome::Success => (
             true,
             match &job.kind {
-                JobKind::Test { mode, connector, .. } => {
+                JobKind::Test {
+                    mode, connector, ..
+                } => {
                     if job.answered == Some(true) {
-                        format!("Kept {mode} on {connector} until reboot. Apply it to make it permanent.")
+                        format!(
+                            "Kept {mode} on {connector} until reboot. Apply it to make it permanent."
+                        )
                     } else {
                         format!("{connector} is back on its own EDID.")
                     }
@@ -1235,16 +1451,22 @@ fn outcome_message(job: &Job, outcome: &Outcome) -> (bool, String) {
                 JobKind::Reset { connector } => format!("{connector} is back on its own EDID."),
             },
         ),
-        Outcome::Cancelled => (false, "Cancelled: the password prompt was dismissed.".into()),
+        Outcome::Cancelled => (
+            false,
+            "Cancelled: the password prompt was dismissed.".into(),
+        ),
         Outcome::NotAuthorized => (
             false,
-            "Not authorized. This needs Desktop Mode (for the password prompt) and an administrator \
-             password; on SteamOS set one with `passwd`."
+            "Not authorized. This needs an administrator password; on SteamOS set one in Desktop \
+             Mode with `passwd` in Konsole."
                 .into(),
         ),
         Outcome::Failed(why) => (
             false,
-            format!("{} failed ({why}). See Output for details.", job.kind.title()),
+            format!(
+                "{} failed ({why}). See Output for details.",
+                job.kind.title()
+            ),
         ),
     }
 }

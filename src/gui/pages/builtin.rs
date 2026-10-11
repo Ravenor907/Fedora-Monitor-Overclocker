@@ -76,7 +76,7 @@ pub fn show(ui: &mut Ui, st: &mut State, view: &View, out: &mut Vec<Action>) {
             return;
         }
         screen_card(ui, info, settings);
-        gamescope_card(ui, settings, view);
+        gamescope_card(ui, settings, view, out);
         if settings.is_some_and(|s| s.installed) {
             manage_card(ui, out);
         }
@@ -100,8 +100,7 @@ fn trial_banner(ui: &mut Ui, info: &PanelInfo, s: &Settings, view: &View, out: &
                 ui,
                 &[
                     if view.game_mode {
-                        "Restart Game Mode (for example switch to Desktop and back) so it loads the trial."
-                            .to_string()
+                        "Restart Game Mode (the button below) so it loads the trial.".to_string()
                     } else {
                         "Switch to Game Mode.".to_string()
                     },
@@ -118,6 +117,9 @@ fn trial_banner(ui: &mut Ui, info: &PanelInfo, s: &Settings, view: &View, out: &
             row(ui, |ui| {
                 if can_switch && button(ui, "Switch to Game Mode", Kind::Primary).clicked() {
                     out.push(Action::Ask(Dialog::GameMode));
+                }
+                if view.game_mode && button(ui, "Restart Game Mode", Kind::Primary).clicked() {
+                    out.push(Action::Ask(Dialog::RestartGameMode));
                 }
                 if button(ui, "Discard", Kind::Secondary).clicked() {
                     out.push(Action::Panel(PanelAction::Discard));
@@ -307,7 +309,7 @@ fn screen_card(ui: &mut Ui, info: &PanelInfo, settings: Option<&Settings>) {
     });
 }
 
-fn gamescope_card(ui: &mut Ui, settings: Option<&Settings>, view: &View) {
+fn gamescope_card(ui: &mut Ui, settings: Option<&Settings>, view: &View, out: &mut Vec<Action>) {
     let p = palette(ui.ctx());
     let Some(s) = settings else { return };
     card(ui, |ui| {
@@ -357,6 +359,9 @@ fn gamescope_card(ui: &mut Ui, settings: Option<&Settings>, view: &View) {
                 RichText::new("Settings changed after this load. Restart Game Mode to apply them.")
                     .color(p.warn),
             );
+            if view.game_mode && button(ui, "Restart Game Mode", Kind::Primary).clicked() {
+                out.push(Action::Ask(Dialog::RestartGameMode));
+            }
         }
     });
 }

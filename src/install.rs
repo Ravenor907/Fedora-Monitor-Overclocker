@@ -393,6 +393,15 @@ fn remove_overrides_as_root() -> bool {
     let graphical = ["WAYLAND_DISPLAY", "DISPLAY"]
         .iter()
         .any(|v| std::env::var_os(v).is_some_and(|s| !s.is_empty()));
+    // From the app: the password comes on stdin (works in Game Mode).
+    if std::env::var_os("MONITOR_OC_SUDO_STDIN").is_some() {
+        return std::process::Command::new("sudo")
+            .args(["-S", "-k", "-p", ""])
+            .arg(&exe)
+            .arg("remove")
+            .status()
+            .is_ok_and(|s| s.success());
+    }
     let (tool, why) = if graphical && system::which("pkexec") {
         ("pkexec", "Approve the password prompt")
     } else if system::which("sudo") {

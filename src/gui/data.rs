@@ -99,6 +99,8 @@ impl Monitor {
 #[derive(Clone, Copy, Default)]
 pub struct Tools {
     pub pkexec: bool,
+    /// sudo, which the app uses with a password typed in the app.
+    pub sudo: bool,
     pub root: bool,
     pub kscreen_doctor: bool,
     pub session_select: bool,
@@ -198,6 +200,27 @@ impl Backend {
 
     /// Leave the desktop for Game Mode (SteamOS, Bazzite). In the demo this
     /// only pretends that Game Mode started again.
+    /// Restart the Game Mode session from inside it (Steam starts again), so
+    /// Gamescope loads changed settings.
+    pub fn restart_game_mode(&self) {
+        let this = self.clone();
+        std::thread::spawn(move || match &this.source {
+            Source::Demo(world) => {
+                let text = world.lock().unwrap().restart_game_mode();
+                this.send(Event::Toast { ok: true, text });
+                this.refresh();
+            }
+            Source::Live => {
+                this.send(Event::Toast {
+                    ok: true,
+                    text: "Restarting Game Mode…".into(),
+                });
+                crate::report::log("app", "restarting Game Mode");
+                crate::live::restart_game_mode();
+            }
+        });
+    }
+
     pub fn switch_to_game_mode(&self) {
         let this = self.clone();
         std::thread::spawn(move || {
@@ -240,6 +263,7 @@ fn live_snapshot() -> Snapshot {
         checks: doctor::checks(),
         tools: Tools {
             pkexec: system::which("pkexec"),
+            sudo: system::which("sudo"),
             root: system::is_root(),
             kscreen_doctor: system::which("kscreen-doctor"),
             session_select: system::which("steamos-session-select"),

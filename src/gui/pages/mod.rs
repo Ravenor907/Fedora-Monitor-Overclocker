@@ -50,6 +50,8 @@ pub enum Dialog {
     /// Switch the update channel to Testing.
     Testing,
     Uninstall,
+    /// Restart Game Mode from inside it, so Gamescope loads new settings.
+    RestartGameMode,
 }
 
 pub fn header(ui: &mut Ui, title: &str, subtitle: &str) {

@@ -11,6 +11,7 @@
 //! | A                   | Enter                   | press the focused control  |
 //! | B                   | Escape                  | close a dialog, drop focus |
 //! | LB / RB             | PageUp / PageDown       | previous / next page       |
+//! | Right stick         | mouse wheel             | scroll the page            |
 //!
 //! The first input with nothing focused focuses the first control instead.
 //! Devices Steam asks games to ignore (`SDL_GAMECONTROLLER_IGNORE_DEVICES`,
@@ -40,6 +41,11 @@ const ABS_X: u16 = 0x00;
 const ABS_Y: u16 = 0x01;
 const ABS_HAT0X: u16 = 0x10;
 const ABS_HAT0Y: u16 = 0x11;
+const ABS_RY: u16 = 0x04;
+/// Right stick travel ignored around the center.
+const SCROLL_DEADZONE: i32 = 8_000;
+/// Points scrolled per frame at full tilt.
+const SCROLL_SPEED: f32 = 28.0;
 
 /// `struct input_event` on 64-bit Linux: a 16-byte timeval, then type, code
 /// and value.
@@ -81,6 +87,7 @@ struct Shared {
     hat: (i32, i32),
     stick: (i32, i32),
     stick_dir: Option<Dir>,
+    right_y: i32,
     devices: usize,
 }
 
@@ -112,6 +119,7 @@ impl Shared {
                 _ => self.set_dpad(code, true),
             },
             (EV_KEY, _) if value == 0 => self.set_dpad(code, false),
+            (EV_ABS, ABS_RY) => self.right_y = value,
             (EV_ABS, ABS_HAT0X) => self.hat.0 = value.signum(),
             (EV_ABS, ABS_HAT0Y) => self.hat.1 = value.signum(),
             (EV_ABS, ABS_X) => {
@@ -188,13 +196,31 @@ impl Gamepad {
 
     /// Add this frame's controller input to egui's input as key presses.
     pub fn feed(&mut self, ctx: &egui::Context, raw: &mut RawInput) {
-        let (presses, held) = {
+        let (presses, held, right_y) = {
             let Ok(mut shared) = self.shared.lock() else {
                 return;
             };
-            (std::mem::take(&mut shared.presses), shared.held())
+            (
+                std::mem::take(&mut shared.presses),
+                shared.held(),
+                shared.right_y,
+            )
         };
+        if let Some(delta) = scroll_delta(right_y) {
+            // Scroll whatever is in the middle of the window.
+            let center = ctx.content_rect().center();
+            raw.events.push(Event::PointerMoved(center));
+            raw.events.push(Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, delta),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            });
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
         let mut focused = ctx.memory(|m| m.focused().is_some());
+        // In a text field the arrows move the cursor; up and down leave it.
+        let typing = ctx.egui_wants_keyboard_input();
         for key in presses {
             // Escape with nothing focused would do nothing; Enter would press
             // nothing. Focus the first control instead.
@@ -210,12 +236,12 @@ impl Gamepad {
             (None, _) => self.repeating = None,
             (Some(dir), Some((was, next))) if dir == was => {
                 if now >= next {
-                    tap(raw, if focused { dir.key() } else { Key::Tab });
+                    step(raw, dir, focused, typing);
                     self.repeating = Some((dir, now + REPEAT_EVERY));
                 }
             }
             (Some(dir), _) => {
-                tap(raw, if focused { dir.key() } else { Key::Tab });
+                step(raw, dir, focused, typing);
                 self.repeating = Some((dir, now + REPEAT_DELAY));
             }
         }
@@ -225,14 +251,40 @@ impl Gamepad {
     }
 }
 
+/// Wheel movement for a right stick position (up scrolls up), or None in
+/// the dead zone.
+fn scroll_delta(y: i32) -> Option<f32> {
+    if y.saturating_abs() < SCROLL_DEADZONE {
+        return None;
+    }
+    let tilt = (y as f32 / 32_767.0).clamp(-1.0, 1.0);
+    // A positive wheel delta moves the content down, i.e. scrolls up.
+    Some(-tilt * tilt.abs() * SCROLL_SPEED)
+}
+
+/// One step of the D-pad or stick: move focus (or the cursor in a text
+/// field, where up and down jump to the previous or next control instead).
+fn step(raw: &mut RawInput, dir: Dir, focused: bool, typing: bool) {
+    match (focused, typing, dir) {
+        (false, _, _) => tap(raw, Key::Tab),
+        (true, true, Dir::Up) => tap_with(raw, Key::Tab, Modifiers::SHIFT),
+        (true, true, Dir::Down) => tap(raw, Key::Tab),
+        _ => tap(raw, dir.key()),
+    }
+}
+
 fn tap(raw: &mut RawInput, key: Key) {
+    tap_with(raw, key, Modifiers::NONE);
+}
+
+fn tap_with(raw: &mut RawInput, key: Key, modifiers: Modifiers) {
     for pressed in [true, false] {
         raw.events.push(Event::Key {
             key,
             physical_key: None,
             pressed,
             repeat: false,
-            modifiers: Modifiers::NONE,
+            modifiers,
         });
     }
 }
@@ -291,6 +343,7 @@ fn read_device(
     if let Ok(mut s) = shared.lock() {
         s.devices = s.devices.saturating_sub(1);
         s.dpad = [false; 4];
+        s.right_y = 0;
         s.hat = (0, 0);
         s.stick = (0, 0);
         s.stick_dir = None;
@@ -382,6 +435,17 @@ mod tests {
         assert!(ids.contains(&(0x0b05, 0x1abe)));
         assert_eq!(ids.len(), 3);
         assert!(ignored_ids("").is_empty());
+    }
+
+    #[test]
+    fn right_stick_scrolls() {
+        assert_eq!(scroll_delta(0), None);
+        assert_eq!(scroll_delta(SCROLL_DEADZONE - 1), None);
+        // Stick down: the content moves up (negative delta), faster at full tilt.
+        let soft = scroll_delta(16_000).unwrap();
+        let hard = scroll_delta(32_767).unwrap();
+        assert!(soft < 0.0 && hard < soft);
+        assert!(scroll_delta(-32_768).unwrap() > 0.0);
     }
 
     #[test]

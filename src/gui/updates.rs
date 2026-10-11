@@ -41,7 +41,8 @@ pub enum UpdateAction {
     Channel(Channel),
     Auto(bool),
     Restart,
-    Uninstall,
+    /// With the administrator password when overrides have to go too.
+    Uninstall(Option<String>),
     /// Automatic error reports on or off.
     Reports(bool),
     SaveKey,
@@ -345,7 +346,7 @@ impl Updates {
                 }
             }
             UpdateAction::Restart => self.restart(),
-            UpdateAction::Uninstall => self.uninstall(),
+            UpdateAction::Uninstall(password) => self.uninstall(password),
             UpdateAction::Reports(on) => {
                 let Some(paths) = &self.paths else {
                     return;
@@ -408,7 +409,7 @@ impl Updates {
     }
 
     /// Run `monitor-oc uninstall` (everything, settings included).
-    fn uninstall(&mut self) {
+    fn uninstall(&mut self, password: Option<String>) {
         if self.uninstalling || self.paths.is_none() {
             return;
         }
@@ -417,14 +418,26 @@ impl Updates {
         let _ = thread::Builder::new()
             .name("uninstall".into())
             .spawn(move || {
+                use std::io::Write;
+                use std::process::{Command, Stdio};
                 let result = std::env::current_exe()
                     .map_err(|e| e.to_string())
                     .and_then(|exe| {
-                        std::process::Command::new(exe)
-                            .arg("uninstall")
-                            .stdin(std::process::Stdio::null())
-                            .output()
-                            .map_err(|e| e.to_string())
+                        let mut cmd = Command::new(exe);
+                        cmd.arg("uninstall")
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped());
+                        if password.is_some() {
+                            // `uninstall` hands its stdin to `sudo -S`.
+                            cmd.env("MONITOR_OC_SUDO_STDIN", "1").stdin(Stdio::piped());
+                        } else {
+                            cmd.stdin(Stdio::null());
+                        }
+                        let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+                        if let (Some(pw), Some(mut stdin)) = (password, child.stdin.take()) {
+                            let _ = stdin.write_all(format!("{pw}\n").as_bytes());
+                        }
+                        child.wait_with_output().map_err(|e| e.to_string())
                     })
                     .and_then(|out| {
                         if out.status.success() {
@@ -637,12 +650,15 @@ fn reports_card(ui: &mut Ui, updates: &mut Updates, out: &mut Vec<Action>) {
             });
         } else {
             caption(ui, "GitHub access key", p.text_faint);
-            ui.add(
+            let edit = ui.add(
                 egui::TextEdit::singleline(&mut updates.key_input)
                     .password(true)
                     .hint_text("github_pat_…")
                     .desired_width(f32::INFINITY),
             );
+            if edit.gained_focus() {
+                crate::gui::steam_keyboard();
+            }
             ui.add_space(4.0);
             if button_if(
                 ui,

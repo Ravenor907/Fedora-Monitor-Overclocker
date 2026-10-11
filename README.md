@@ -43,8 +43,9 @@ It's finished when it says **Done!** The first time it sets up a private Rust co
 folder and builds Monitor OC (no sudo, nothing on SteamOS's read-only system, so it survives SteamOS
 updates).
 
-**4. Open Monitor OC** from the desktop icon or the app menu. To use it in Game Mode, add it to Steam
-once: in Desktop Mode open Steam, **Games > Add a Non-Steam Game to My Library**, tick **Monitor OC**.
+**4. Open Monitor OC** from the desktop icon, the app menu, or your Game Mode library (the installer adds
+it there for you on SteamOS). Everything works in Game Mode with the controller; Steam's keyboard opens
+when something needs typing.
 
 That's it. Monitor OC keeps itself up to date from here on.
 
