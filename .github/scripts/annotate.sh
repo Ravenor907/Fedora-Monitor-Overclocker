@@ -1,6 +1,8 @@
 #!/bin/sh
 # Run a cargo command and turn its errors into GitHub annotations, so they
 # show on the pull request without opening the log.
+# Plain text, or the colors would hide the file names from grep.
+export CARGO_TERM_COLOR=never
 out=$(mktemp)
 "$@" > "$out" 2>&1
 status=$?
