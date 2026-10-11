@@ -113,3 +113,19 @@ fn rollback_if_failing() {
         paths.binary.display()
     );
 }
+
+/// Open Steam's on-screen keyboard, the only way to type in Game Mode.
+pub fn steam_keyboard() {
+    if !crate::gamescope::in_game_mode() {
+        return;
+    }
+    let child = std::process::Command::new("steam")
+        .arg("steam://open/keyboard")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Ok(mut child) = child {
+        std::thread::spawn(move || child.wait());
+    }
+}

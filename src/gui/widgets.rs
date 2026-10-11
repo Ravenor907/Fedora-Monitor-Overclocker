@@ -419,6 +419,52 @@ pub fn facts(ui: &mut Ui, id: &str, rows: &[(&str, String)]) {
         });
 }
 
+/// Pick one of many with ‹ and › (D-pad friendly, unlike a drop-down).
+/// Returns true when the choice changed.
+pub fn picker(ui: &mut Ui, index: &mut usize, labels: &[String]) -> bool {
+    let p = palette(ui.ctx());
+    if labels.is_empty() {
+        return false;
+    }
+    let old = *index;
+    *index = (*index).min(labels.len() - 1);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), TOUCH), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(RADIUS), p.raised);
+    let side = TOUCH;
+    let left = Rect::from_min_size(rect.min, vec2(side, side));
+    let right = Rect::from_min_size(pos2(rect.max.x - side, rect.min.y), vec2(side, side));
+    let arrow = |text: &str| {
+        Button::new(text, Kind::Ghost)
+            .min_width(side)
+            .height(side)
+            .text_size(24.0)
+    };
+    if ui
+        .put(left, |ui: &mut Ui| ui.add_enabled(*index > 0, arrow("‹")))
+        .clicked()
+    {
+        *index -= 1;
+    }
+    if ui
+        .put(right, |ui: &mut Ui| {
+            ui.add_enabled(*index + 1 < labels.len(), arrow("›"))
+        })
+        .clicked()
+    {
+        *index += 1;
+    }
+    let text = format!("{}   ({}/{})", labels[*index], *index + 1, labels.len());
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        text,
+        font(16.0),
+        p.text,
+    );
+    *index != old
+}
+
 /// One option per segment; returns true when the selection changed.
 pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &str)]) -> bool {
     let p = palette(ui.ctx());

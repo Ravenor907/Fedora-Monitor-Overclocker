@@ -189,6 +189,7 @@ impl World {
             checks,
             tools: Tools {
                 pkexec: true,
+                sudo: true,
                 root: false,
                 kscreen_doctor: false,
                 session_select: true,

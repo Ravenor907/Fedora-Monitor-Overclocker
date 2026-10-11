@@ -1,5 +1,7 @@
 //! External-monitor changes need root, so the app runs its own CLI through
-//! pkexec (`pkexec /path/to/monitor-oc test ...`), streams the output and
+//! `sudo -S` with the password asked for in the app (works in Game Mode, which
+//! can't show a polkit prompt), or pkexec on a desktop when no password was
+//! given (`pkexec /path/to/monitor-oc test ...`). It streams the output and
 //! answers `test`'s keep/revert prompt over stdin. The root process reverts on
 //! its own when the time runs out, so a black screen recovers even if the app
 //! is gone; closing the app closes stdin, which also reverts.
@@ -187,8 +189,18 @@ impl Job {
     }
 }
 
+/// What `sudo` prints when the password is wrong (the app asks again).
+pub fn wrong_password(log: &[String]) -> bool {
+    log.iter().any(|l| {
+        l.contains("incorrect password")
+            || l.contains("Sorry, try again")
+            || l.contains("a password is required")
+    })
+}
+
 /// Start `kind` in the background; events arrive through the backend.
-pub fn start(backend: &Backend, id: u64, kind: Kind) -> Job {
+/// `password` runs it with `sudo -S` instead of pkexec.
+pub fn start(backend: &Backend, id: u64, kind: Kind, password: Option<String>) -> Job {
     let emit = {
         let backend = backend.clone();
         move |event: Event| backend.send(DataEvent::Job { id, event })
@@ -200,9 +212,13 @@ pub fn start(backend: &Backend, id: u64, kind: Kind) -> Job {
             thread::spawn(move || simulate(&kind, &world, rx, emit));
         }
         Source::Live => {
-            if let Err(e) = spawn(&kind, rx, emit.clone()) {
-                emit(Event::Exit(Outcome::Failed(format!("{e:#}"))));
-            }
+            // Off the UI thread: checking a password takes a moment.
+            let kind = kind.clone();
+            thread::spawn(move || {
+                if let Err(e) = spawn(&kind, password, rx, emit.clone()) {
+                    emit(Event::Exit(Outcome::Failed(format!("{e:#}"))));
+                }
+            });
         }
     }
     Job {
@@ -218,28 +234,47 @@ pub fn start(backend: &Backend, id: u64, kind: Kind) -> Job {
 
 fn spawn(
     kind: &Kind,
+    password: Option<String>,
     input: mpsc::Receiver<String>,
     emit: impl Fn(Event) + Clone + Send + 'static,
 ) -> Result<()> {
     let exe = std::env::current_exe().context("locating the monitor-oc binary")?;
-    let mut cmd = if system::is_root() {
-        Command::new(&exe)
+    if let Some(password) = &password
+        && !system::is_root()
+        && !sudo_accepts(password)
+    {
+        emit(Event::Line("sudo: incorrect password".into()));
+        emit(Event::Exit(Outcome::NotAuthorized));
+        return Ok(());
+    }
+    let (mut cmd, via) = if system::is_root() {
+        (Command::new(&exe), "")
+    } else if password.is_some() {
+        let mut cmd = Command::new("sudo");
+        // -S: password on stdin; -p "": no prompt text; -k: always check it.
+        cmd.args(["-S", "-k", "-p", ""]).arg(&exe);
+        (cmd, "sudo ")
     } else {
         let mut cmd = Command::new("pkexec");
         cmd.arg(&exe);
-        cmd
+        (cmd, "pkexec ")
     };
     cmd.args(kind.args())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let shown =
-        kind.command_line()
-            .replacen("sudo ", if system::is_root() { "" } else { "pkexec " }, 1);
+    let shown = kind.command_line().replacen("sudo ", via, 1);
     emit(Event::Line(format!("$ {shown}")));
-    let mut child = cmd.spawn().context("starting pkexec")?;
+    let mut child = cmd.spawn().context("starting the privileged command")?;
 
     let mut stdin = child.stdin.take().context("no stdin")?;
+    if let Some(password) = password {
+        // sudo reads the first line; the rest is for `test`'s questions.
+        stdin
+            .write_all(format!("{password}\n").as_bytes())
+            .and_then(|_| stdin.flush())
+            .context("passing the password")?;
+    }
     thread::spawn(move || {
         for line in input {
             if stdin
@@ -269,6 +304,24 @@ fn spawn(
         }));
     });
     Ok(())
+}
+
+/// Check a password with `sudo -v` first, so a wrong one fails right away
+/// instead of sudo waiting for another try.
+fn sudo_accepts(password: &str) -> bool {
+    let child = Command::new("sudo")
+        .args(["-S", "-k", "-p", "", "-v"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        return false;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(format!("{password}\n").as_bytes());
+    }
+    child.wait().is_ok_and(|s| s.success())
 }
 
 fn forward(

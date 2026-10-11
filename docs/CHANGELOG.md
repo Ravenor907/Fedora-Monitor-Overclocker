@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0.2 (testing)
+
+Everything works in Game Mode, with the controller:
+
+- **External monitors in Game Mode.** Testing, installing and removing a mode asks for the administrator
+  password in the app (Game Mode can't show the system prompt); it's kept only while the app is open.
+  Steam's keyboard opens by itself for password and text fields. Uninstalling asks the same way when
+  external overrides have to go.
+- **Restart Game Mode** button on the Built-in screen page, for loading a trial or changed settings
+  without leaving Game Mode.
+- **Exit Monitor OC** button in Game Mode.
+- Controller: the right stick scrolls; up and down leave a text field; the resolution drop-down is now a
+  ‹ › picker the D-pad can use.
+- In Game Mode a new external mode is made the preferred one by default (Gamescope uses that).
+- The installer adds Monitor OC to the Game Mode library on SteamOS (once).
+
 ## 0.2.0.1 (testing)
 
 - **Game Mode scaling fixed.** The app no longer draws everything about three times too big (and larger than

@@ -27,6 +27,23 @@ if [ -d "$HOME/Desktop" ] && [ -f "$ENTRY" ]; then
     chmod +x "$HOME/Desktop/$APP_ID.desktop"
 fi
 
+# Add it to the Game Mode library once, like Desktop Mode's "Add to Steam"
+# (SteamOS's helper; needs Steam running). Skipped when it's already there.
+IN_STEAM=0
+for vdf in "$HOME"/.local/share/Steam/userdata/*/config/shortcuts.vdf; do
+    [ -f "$vdf" ] && grep -aq "monitor-oc" "$vdf" && IN_STEAM=1
+done
+if [ "$IN_STEAM" = 0 ] && [ -f "$ENTRY" ] && command -v steamos-add-to-steam > /dev/null 2>&1 &&
+    pgrep -x steam > /dev/null 2>&1; then
+    echo "==> Adding Monitor OC to your Game Mode library"
+    steamos-add-to-steam "$ENTRY" > /dev/null 2>&1 && IN_STEAM=1
+fi
+
 echo
 echo "Done! Open \"Monitor OC\" from the app menu or your desktop."
+if [ "$IN_STEAM" = 1 ]; then
+    echo "In Game Mode it's in your library (Non-Steam)."
+else
+    echo "For Game Mode: in Steam, Games > Add a Non-Steam Game to My Library, tick Monitor OC."
+fi
 echo "It keeps itself up to date from here on."
