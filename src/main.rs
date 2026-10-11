@@ -2,6 +2,7 @@ mod doctor;
 mod drm;
 mod edid;
 mod gamescope;
+mod install;
 mod service;
 mod state;
 mod system;
@@ -96,6 +97,15 @@ enum Cmd {
     },
     /// Check this system and explain anything that will stop an overclock working.
     Doctor,
+    /// Install Monitor OC for your user: ~/.local/bin/monitor-oc and an app menu
+    /// entry (which Steam can add for Game Mode). Re-run to upgrade. No sudo.
+    Install,
+    /// Remove what `install` added.
+    Uninstall {
+        /// Also delete the built-in screen settings and ~/.config/monitor-oc.
+        #[arg(long)]
+        purge: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -211,6 +221,8 @@ fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Install => install::install(),
+        Cmd::Uninstall { purge } => install::uninstall(purge),
     }
 }
 
