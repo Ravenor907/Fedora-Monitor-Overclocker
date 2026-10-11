@@ -1,0 +1,19 @@
+[package]
+name = "monitor-oc"
+version = "0.1.0"
+edition = "2024"
+description = "Monitor refresh-rate overclocking via EDID overrides for SteamOS, Fedora and other Linux distros"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/ravenor907/fedora-monitor-overclocker"
+rust-version = "1.88"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
