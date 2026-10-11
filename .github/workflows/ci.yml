@@ -1,13 +1,20 @@
 name: CI
 
+# Every push to main (Stable) or testing (test builds) that passes is built and
+# published on the `dist` branch, where install.sh and the app's updater get it.
+# There are no GitHub releases.
+
 on:
   push:
     branches: [main, testing]
-    tags: ["v*"]
   pull_request:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,106 +38,92 @@ jobs:
       - run: .github/scripts/annotate.sh cargo clippy --all-targets --no-default-features --message-format=short -- -D warnings
       - run: .github/scripts/annotate.sh cargo test
       - run: .github/scripts/annotate.sh cargo test --no-default-features
-      - run: shellcheck install.sh
+      - run: shellcheck install.sh .github/scripts/*.sh
       - run: desktop-file-validate packaging/Install-Monitor-OC.desktop
+      # main carries Stable builds (x.y.z), testing carries test builds (x.y.z.N).
+      - name: Check VERSION for this branch
+        if: github.event_name == 'push'
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          case "$GITHUB_REF_NAME:$version" in
+            main:*.*.*.*) echo "::error file=VERSION::main must carry a Stable version, not $version"; exit 1 ;;
+          esac
 
   build:
     needs: check
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # The app (GUI + CLI). Built on the oldest supported Ubuntu so it
-          # only needs glibc 2.35, which SteamOS, Fedora and Bazzite all exceed.
-          - name: monitor-oc-x86_64
-            os: ubuntu-22.04
-            target: ""
-            args: ""
-            out: target/release/monitor-oc
-          # Command line only and fully static: runs on any x86_64 Linux.
-          - name: monitor-oc-x86_64-musl
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            args: --no-default-features --target x86_64-unknown-linux-musl
-            out: target/x86_64-unknown-linux-musl/release/monitor-oc
-    runs-on: ${{ matrix.os }}
+    # The oldest supported Ubuntu, so the app only needs glibc 2.35, which
+    # SteamOS, Fedora and Bazzite all exceed.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.name }}
-      - run: cargo build --release --locked ${{ matrix.args }}
+      - run: cargo build --release --locked
       - name: Package
         run: |
-          mkdir -p dist
-          cp "${{ matrix.out }}" "dist/${{ matrix.name }}"
-          cd dist
-          sha256sum "${{ matrix.name }}" > "${{ matrix.name }}.sha256"
-          cat "${{ matrix.name }}.sha256"
-          "./${{ matrix.name }}" --version
-      # Install into a throwaway home and remove again. A build with the
-      # `gui` subcommand must add the menu entry; a CLI-only build must not.
+          mkdir -p out
+          cp target/release/monitor-oc out/monitor-oc-x86_64
+          cp VERSION out/VERSION
+          cd out
+          sha256sum monitor-oc-x86_64 > monitor-oc-x86_64.sha256
+          ./monitor-oc-x86_64 --version
+          test "$(./monitor-oc-x86_64 --version)" = "monitor-oc $(tr -d '[:space:]' < VERSION)"
+      # Install into a throwaway home and remove again.
       - name: Smoke-test install and uninstall
         env:
           HOME: ${{ runner.temp }}/home
         run: |
           mkdir -p "$HOME"
-          bin="dist/${{ matrix.name }}"
-          entry="$HOME/.local/share/applications/io.github.ravenor907.MonitorOC.desktop"
-          "$bin" install
+          out/monitor-oc-x86_64 install
           find "$HOME" -type f | sort
           test -x "$HOME/.local/bin/monitor-oc"
-          if "$bin" help gui >/dev/null 2>&1; then test -f "$entry"; else test ! -e "$entry"; fi
+          test -f "$HOME/.local/share/applications/io.github.ravenor907.MonitorOC.desktop"
           "$HOME/.local/bin/monitor-oc" uninstall
           test -z "$(find "$HOME" -type f ! -name mimeinfo.cache)"
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}
-          path: dist/*
+          name: monitor-oc
+          path: out/*
           if-no-files-found: error
 
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
+  publish:
+    if: github.event_name == 'push'
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: publish-dist
+      cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          path: dist
-          merge-multiple: true
-      - run: ls -l dist
-      # v0.2.1 is a Stable release; v0.2.1.3 (four parts) is a test build,
-      # published as a pre-release so releases/latest and install.sh skip it.
-      - name: Check the tag against VERSION
-        id: kind
+          name: monitor-oc
+          path: new
+      # dist holds stable/ and testing/ in a single commit that is replaced on
+      # every publish, so builds never pile up in the repository's history.
+      - name: Publish to the dist branch
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          version=$(tr -d '[:space:]' < VERSION)
-          tag=${GITHUB_REF_NAME#v}
-          if [ "$tag" != "$version" ]; then
-            echo "::error::tag v$tag does not match VERSION ($version)"
-            exit 1
+          dir=stable
+          [ "$GITHUB_REF_NAME" = testing ] && dir=testing
+          url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          mkdir dist && cd dist
+          git init -q -b dist
+          if git fetch -q --depth 1 "$url" dist 2>/dev/null; then
+            git checkout -q FETCH_HEAD -- . 2>/dev/null || true
           fi
-          case $version in
-            *.*.*.*) echo "prerelease=true" >> "$GITHUB_OUTPUT"; echo "name=$version (testing)" >> "$GITHUB_OUTPUT" ;;
-            *) echo "prerelease=false" >> "$GITHUB_OUTPUT"; echo "name=$version" >> "$GITHUB_OUTPUT" ;;
-          esac
-      - uses: softprops/action-gh-release@v2
-        with:
-          name: ${{ steps.kind.outputs.name }}
-          prerelease: ${{ steps.kind.outputs.prerelease == 'true' }}
-          make_latest: ${{ steps.kind.outputs.prerelease == 'true' && 'false' || 'true' }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            dist/monitor-oc-x86_64
-            dist/monitor-oc-x86_64.sha256
-            dist/monitor-oc-x86_64-musl
-            dist/monitor-oc-x86_64-musl.sha256
-            install.sh
-            packaging/Install-Monitor-OC.desktop
+          rm -rf "$dir" && mkdir "$dir"
+          cp ../new/* "$dir/"
+          cat > README.md <<'EOF'
+          # Monitor OC builds
+
+          Published by CI from `main` (stable/) and `testing` (testing/). Install with
+          install.sh from the main branch; the app updates itself from here.
+          EOF
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Builds: $dir $(cat "$dir/VERSION") from ${GITHUB_SHA::7}"
+          git push -q -f "$url" HEAD:dist
+          ls -l stable testing 2>/dev/null || true

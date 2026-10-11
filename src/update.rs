@@ -1,15 +1,16 @@
 //! Updates with a Stable and a Testing channel, the same way Ally Hub does it.
 //!
 //! * The `main` branch is **Stable** and `testing` holds the owner's **test
-//!   builds**. Each branch's `VERSION` file names the build it carries.
+//!   builds**. There are no GitHub releases: on every push to either branch,
+//!   CI builds the app and publishes it on the `dist` branch, in `stable/` or
+//!   `testing/` (the binary, its `.sha256` and `VERSION`). That branch is one
+//!   commit, replaced each time, so the repository never fills up with builds.
 //! * A test build is the Stable version plus a revision: Stable 0.2.0, then
 //!   testing 0.2.0.1, 0.2.0.2, ... (at most [`MAX_TEST_REVISIONS`]). When the
 //!   owner ships, Stable gets the next x.y.z and testing restarts at its .1.
-//! * The binaries come from the GitHub release tagged `v<VERSION>`. Test
-//!   builds are pre-releases, so `releases/latest` (and with it install.sh)
-//!   only ever sees Stable.
-//! * Stable devices only look at `main`. Devices on Testing take whichever of
-//!   `main` and `testing` has the higher build.
+//! * install.sh installs `dist/stable`. Stable devices only look there;
+//!   devices on Testing take whichever of `stable/` and `testing/` has the
+//!   higher build.
 //! * Every install keeps the binary it replaces, so a bad build can be rolled
 //!   back: from the app, with `monitor-oc update --rollback`, from the Testing
 //!   Rescue menu entry (plain shell, works when the app won't start), or on
@@ -130,11 +131,11 @@ impl Channel {
         }
     }
 
-    /// Branches whose builds this channel installs.
-    fn branches(self) -> &'static [&'static str] {
+    /// Folders on the `dist` branch whose builds this channel installs.
+    fn dirs(self) -> &'static [&'static str] {
         match self {
-            Channel::Stable => &["main"],
-            Channel::Testing => &["main", "testing"],
+            Channel::Stable => &["stable"],
+            Channel::Testing => &["stable", "testing"],
         }
     }
 }
@@ -379,21 +380,12 @@ fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     result.with_context(|| format!("writing {}", path.display()))
 }
 
-/// The release file this build updates from.
-pub fn asset_name() -> &'static str {
-    if cfg!(feature = "gui") {
-        "monitor-oc-x86_64"
-    } else {
-        "monitor-oc-x86_64-musl"
-    }
-}
+/// The file on the `dist` branch this build updates from.
+pub const ASSET: &str = "monitor-oc-x86_64";
+const DIST: &str = "dist";
 
-fn version_url(branch: &str) -> String {
-    format!("https://raw.githubusercontent.com/{REPO}/{branch}/VERSION")
-}
-
-fn release_url(build: Build, file: &str) -> String {
-    format!("https://github.com/{REPO}/releases/download/v{build}/{file}")
+fn raw_url(at: &str, dir: &str, file: &str) -> String {
+    format!("https://raw.githubusercontent.com/{REPO}/{at}/{dir}/{file}")
 }
 
 /// curl's exit code for an HTTP error such as 404 with `--fail`.
@@ -423,15 +415,58 @@ fn curl(args: &[&str]) -> Result<Fetch> {
     )
 }
 
-/// The build a branch holds, or None while the branch has no VERSION file.
-fn branch_build(branch: &str) -> Result<Option<Build>> {
-    match curl(&["--max-time", "30", &version_url(branch)])? {
+/// The commit at the tip of `dist`, so a version and its binary are read
+/// from the same commit (branch URLs are cached for a few minutes). Falls
+/// back to the branch name if the API can't be reached.
+fn dist_commit() -> String {
+    let url = format!("https://api.github.com/repos/{REPO}/git/ref/heads/{DIST}");
+    match curl(&[
+        "--max-time",
+        "20",
+        "-H",
+        "Accept: application/vnd.github+json",
+        &url,
+    ]) {
+        Ok(Fetch::Ok(body)) => {
+            commit_from_ref(&String::from_utf8_lossy(&body)).unwrap_or_else(|| DIST.to_string())
+        }
+        _ => DIST.to_string(),
+    }
+}
+
+/// The 40-hex commit in a GitHub `git/ref` response.
+fn commit_from_ref(json: &str) -> Option<String> {
+    let rest = &json[json.find("\"sha\"")? + 5..];
+    let start = rest.find('"')? + 1;
+    let sha = rest.get(start..start + 40)?;
+    sha.bytes()
+        .all(|b| b.is_ascii_hexdigit())
+        .then(|| sha.to_string())
+}
+
+/// Where a build can be downloaded from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Target {
+    pub build: Build,
+    /// `stable` or `testing` on the dist branch.
+    pub dir: &'static str,
+    /// The dist commit it was seen at.
+    pub at: String,
+}
+
+/// The build published in `dir`, or None while there is none.
+fn published(at: &str, dir: &'static str) -> Result<Option<Target>> {
+    match curl(&["--max-time", "30", &raw_url(at, dir, "VERSION")])? {
         Fetch::NotFound => Ok(None),
         Fetch::Ok(body) => {
             let text = String::from_utf8_lossy(&body);
-            Build::parse(&text)
-                .map(Some)
-                .with_context(|| format!("the {branch} branch has an unreadable VERSION"))
+            let build = Build::parse(&text)
+                .with_context(|| format!("the published {dir} build has an unreadable VERSION"))?;
+            Ok(Some(Target {
+                build,
+                dir,
+                at: at.to_string(),
+            }))
         }
     }
 }
@@ -440,31 +475,38 @@ fn branch_build(branch: &str) -> Result<Option<Build>> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Check {
     /// A newer build on the chosen channel.
-    pub newer: Option<Build>,
+    pub newer: Option<Target>,
     /// Stable's build, when the running build is a test build that is newer
     /// than it (offered as "go back to Stable").
-    pub stable: Option<Build>,
+    pub stable: Option<Target>,
 }
 
 /// The newest build of `channel` that wasn't rolled back.
 pub fn check(paths: &Paths, channel: Channel) -> Result<Check> {
     let state = paths.state();
     let current = Build::current();
-    let mut builds = Vec::new();
-    let mut stable = None;
-    for branch in channel.branches() {
-        if let Some(build) = branch_build(branch)? {
-            if *branch == "main" {
-                stable = Some(build);
-            }
-            builds.push(build);
+    let at = dist_commit();
+    let mut found = Vec::new();
+    for dir in Channel::Testing.dirs() {
+        if !channel.dirs().contains(dir) && *dir != "stable" {
+            continue;
+        }
+        if let Some(target) = published(&at, dir)? {
+            found.push(target);
         }
     }
-    if channel == Channel::Stable && stable.is_none() {
-        stable = branch_build("main")?;
-    }
-    let newer = pick_newer(current, &builds, &state);
-    let stable = stable.filter(|s| current.is_test() && *s < current && !state.is_bad(*s));
+    let stable = found
+        .iter()
+        .find(|t| t.dir == "stable")
+        .filter(|s| current.is_test() && s.build < current && !state.is_bad(s.build))
+        .cloned();
+    let candidates: Vec<Target> = found
+        .into_iter()
+        .filter(|t| channel.dirs().contains(&t.dir))
+        .collect();
+    let builds: Vec<Build> = candidates.iter().map(|t| t.build).collect();
+    let newer = pick_newer(current, &builds, &state)
+        .and_then(|b| candidates.into_iter().find(|t| t.build == b));
     Ok(Check { newer, stable })
 }
 
@@ -476,30 +518,37 @@ fn pick_newer(current: Build, builds: &[Build], state: &UpdateState) -> Option<B
         .max()
 }
 
-/// Download, verify and install `build` (newer or older), keeping the
+/// Download, verify and install `target` (newer or older), keeping the
 /// installed binary for a rollback. Returns what was installed.
-pub fn install(paths: &Paths, build: Build) -> Result<Build> {
+pub fn install(paths: &Paths, target: &Target) -> Result<Build> {
     if std::env::consts::ARCH != "x86_64" {
-        bail!("releases are only built for x86_64");
+        bail!("Monitor OC is only built for x86_64");
     }
-    let asset = asset_name();
-    let dir = paths.downloads.join(build.to_string());
+    if !cfg!(feature = "gui") {
+        bail!(
+            "this is the command-line-only build, which isn't published for updates; \
+             install Monitor OC with install.sh instead"
+        );
+    }
+    let dir = paths.downloads.join(target.build.to_string());
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let result = install_from(paths, build, asset, &dir);
+    let result = install_from(paths, target, &dir);
     let _ = fs::remove_dir_all(&dir);
-    result.map(|()| build)
+    result.map(|()| target.build)
 }
 
-fn install_from(paths: &Paths, build: Build, asset: &str, dir: &Path) -> Result<()> {
-    let file = dir.join(asset);
-    let sums = format!("{asset}.sha256");
-    for (name, to) in [(asset, file.clone()), (sums.as_str(), dir.join(&sums))] {
+fn install_from(paths: &Paths, target: &Target, dir: &Path) -> Result<()> {
+    let build = target.build;
+    let file = dir.join(ASSET);
+    let sums = format!("{ASSET}.sha256");
+    for (name, to) in [(ASSET, file.clone()), (sums.as_str(), dir.join(&sums))] {
         let to_str = to.to_str().context("download path is not valid UTF-8")?;
-        match curl(&["--max-time", "600", "-o", to_str, &release_url(build, name)])? {
+        let url = raw_url(&target.at, target.dir, name);
+        match curl(&["--max-time", "600", "-o", to_str, &url])? {
             Fetch::Ok(_) => {}
             Fetch::NotFound => bail!(
-                "{} isn't published yet; its release is probably still building. Try again in a few minutes",
+                "{} is no longer published (a newer build replaced it); check again",
                 build.label()
             ),
         }
@@ -822,16 +871,16 @@ pub fn command(check_only: bool, channel: Option<Channel>, undo: bool) -> Result
     if check_only {
         println!(
             "{} is available. Run `monitor-oc update` to install it.",
-            target.label()
+            target.build.label()
         );
         return Ok(());
     }
-    println!("Installing {}…", target.label());
-    install(&paths, target)?;
+    println!("Installing {}…", target.build.label());
+    install(&paths, &target)?;
     println!(
         "Installed {}. Close and reopen Monitor OC to use it.\n\
          Changed your mind? monitor-oc update --rollback",
-        target.label()
+        target.build.label()
     );
     Ok(())
 }
@@ -923,6 +972,17 @@ mod tests {
             pick_newer(cur, &[b("0.2.1"), b("0.2.0.3")], &state),
             Some(b("0.2.1"))
         );
+    }
+
+    #[test]
+    fn dist_commit_from_the_api() {
+        let json = r#"{"ref":"refs/heads/dist","object":{"sha":"0123456789abcdef0123456789abcdef01234567","type":"commit"}}"#;
+        assert_eq!(
+            commit_from_ref(json).as_deref(),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
+        assert_eq!(commit_from_ref(r#"{"message":"Not Found"}"#), None);
+        assert_eq!(commit_from_ref(r#"{"sha":"nothex"}"#), None);
     }
 
     #[test]

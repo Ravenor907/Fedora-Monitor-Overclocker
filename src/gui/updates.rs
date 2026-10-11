@@ -6,7 +6,7 @@ use super::theme::{bold, palette};
 use super::widgets::{
     Kind, banner, button, button_if, caption, card, dim, facts, segmented, toggle,
 };
-use crate::update::{self, Build, Channel, Paths, Settings};
+use crate::update::{self, Build, Channel, Paths, Settings, Target};
 use eframe::egui::{self, RichText, Ui};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -16,7 +16,7 @@ pub enum Status {
     Idle,
     Checking,
     UpToDate,
-    Available(Build),
+    Available(Target),
     Installing(Build),
     /// Installed; takes effect when the app restarts.
     Installed(String),
@@ -35,7 +35,7 @@ impl Status {
 
 pub enum UpdateAction {
     Check,
-    Install(Build),
+    Install(Target),
     Rollback,
     Channel(Channel),
     Auto(bool),
@@ -59,7 +59,7 @@ pub struct Updates {
     pub settings: Settings,
     pub status: Status,
     /// Stable's build, offered when leaving Testing.
-    stable: Option<Build>,
+    stable: Option<Target>,
     /// The version kept for a rollback.
     rollback: Option<String>,
     /// A build rolled back on its own at startup.
@@ -152,16 +152,16 @@ impl Updates {
             });
     }
 
-    fn install(&mut self, build: Build) {
+    fn install(&mut self, target: Target) {
         let Some(paths) = self.paths.clone() else {
             return;
         };
-        self.status = Status::Installing(build);
+        self.status = Status::Installing(target.build);
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         let _ = thread::Builder::new()
             .name("update-install".into())
             .spawn(move || {
-                let result = update::install(&paths, build).map_err(|e| format!("{e:#}"));
+                let result = update::install(&paths, &target).map_err(|e| format!("{e:#}"));
                 let _ = tx.send(Msg::Installed(result));
                 ctx.request_repaint();
             });
@@ -253,9 +253,9 @@ impl Updates {
     pub fn act(&mut self, action: UpdateAction) {
         match action {
             UpdateAction::Check => self.check(false),
-            UpdateAction::Install(build) => {
+            UpdateAction::Install(target) => {
                 if !self.status.busy() {
-                    self.install(build);
+                    self.install(target);
                 }
             }
             UpdateAction::Rollback => {
@@ -404,7 +404,7 @@ pub fn show(ui: &mut Ui, updates: &Updates, out: &mut Vec<Action>) {
             Status::Idle => ("Not checked yet.".to_string(), p.text_dim),
             Status::Checking => ("Checking for updates…".into(), p.text_dim),
             Status::UpToDate => ("You're up to date.".into(), p.good),
-            Status::Available(b) => (format!("{} is available.", b.label()), p.accent),
+            Status::Available(t) => (format!("{} is available.", t.build.label()), p.accent),
             Status::Installing(b) => (format!("Installing {}…", b.label()), p.text_dim),
             Status::Installed(v) => (
                 format!(
@@ -424,10 +424,10 @@ pub fn show(ui: &mut Ui, updates: &Updates, out: &mut Vec<Action>) {
         });
         ui.add_space(10.0);
         row(ui, |ui| {
-            if let Status::Available(b) = &updates.status
-                && button_if(ui, !busy, format!("Install {b}"), Kind::Primary).clicked()
+            if let Status::Available(t) = &updates.status
+                && button_if(ui, !busy, format!("Install {}", t.build), Kind::Primary).clicked()
             {
-                out.push(Action::Update(UpdateAction::Install(*b)));
+                out.push(Action::Update(UpdateAction::Install(t.clone())));
             }
             if matches!(updates.status, Status::Installed(_))
                 && button(ui, "Restart now", Kind::Primary).clicked()
@@ -437,17 +437,17 @@ pub fn show(ui: &mut Ui, updates: &Updates, out: &mut Vec<Action>) {
             if button_if(ui, !busy, "Check now", Kind::Secondary).clicked() {
                 out.push(Action::Update(UpdateAction::Check));
             }
-            if let Some(stable) = updates.stable
+            if let Some(stable) = &updates.stable
                 && updates.settings.channel == Channel::Stable
                 && button_if(
                     ui,
                     !busy,
-                    format!("Go back to Stable {stable}"),
+                    format!("Go back to Stable {}", stable.build),
                     Kind::Secondary,
                 )
                 .clicked()
             {
-                out.push(Action::Update(UpdateAction::Install(stable)));
+                out.push(Action::Update(UpdateAction::Install(stable.clone())));
             }
             if let Some(prev) = &updates.rollback
                 && button_if(

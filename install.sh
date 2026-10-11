@@ -1,12 +1,13 @@
 #!/bin/sh
 # Installs Monitor OC for the current user, no sudo needed: downloads the
-# latest release, checks its SHA-256 and runs `monitor-oc install`, which puts
-# the program in ~/.local/bin and adds "Monitor OC" to the app menu.
+# current build from the repository's dist branch, checks its SHA-256 and runs
+# `monitor-oc install`, which puts the program in ~/.local/bin and adds
+# "Monitor OC" to the app menu. The app keeps itself up to date after that.
 #
 #   curl -fsSL https://raw.githubusercontent.com/Ravenor907/monitor-oc/main/install.sh | sh
 #
 # Uninstall:          ... | sh -s -- --uninstall [--keep-settings]
-# A specific release: ... | MONITOR_OC_VERSION=v0.2.0 sh
+# Test builds:        ... | MONITOR_OC_CHANNEL=testing sh
 
 set -eu
 
@@ -30,8 +31,8 @@ Installs Monitor OC for your user account (no sudo needed).
                     goes back to its stock refresh rates in Game Mode)
   --keep-settings   with --uninstall: keep the built-in screen settings
 
-Set MONITOR_OC_VERSION (e.g. v0.2.0) to install that release instead of
-the latest one.
+Set MONITOR_OC_CHANNEL=testing to install the current test build instead
+of the stable one (the app then stays on the Testing channel).
 EOF
 }
 
@@ -104,17 +105,13 @@ main() {
         return
     fi
 
-    if [ -n "${MONITOR_OC_VERSION:-}" ]; then
-        case $MONITOR_OC_VERSION in
-        v*) tag=$MONITOR_OC_VERSION ;;
-        *) tag=v$MONITOR_OC_VERSION ;;
-        esac
-        base="https://github.com/$REPO/releases/download/$tag"
-        label="Monitor OC $tag"
-    else
-        base="https://github.com/$REPO/releases/latest/download"
-        label="the latest Monitor OC"
-    fi
+    case ${MONITOR_OC_CHANNEL:-stable} in
+    stable) dir=stable ;;
+    testing) dir=testing ;;
+    *) die "MONITOR_OC_CHANNEL must be stable or testing" ;;
+    esac
+    base="https://raw.githubusercontent.com/$REPO/dist/$dir"
+    label="the $dir build of Monitor OC"
 
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
         die "this needs curl or wget to download Monitor OC"
@@ -125,19 +122,15 @@ main() {
 
     say "Downloading $label..."
     fetch "$base/$ASSET" "$tmp/$ASSET" || die "download failed: $base/$ASSET"
-    if fetch "$base/$ASSET.sha256" "$tmp/$ASSET.sha256" quiet 2>/dev/null; then
-        verify
-    else
-        warn "this release has no checksum file, so the download cannot be checked"
-    fi
+    fetch "$base/$ASSET.sha256" "$tmp/$ASSET.sha256" || die "download failed: $base/$ASSET.sha256"
+    verify
     chmod +x "$tmp/$ASSET"
 
     if ! version=$("$tmp/$ASSET" --version 2>&1); then
         printf '%s\n' "$version" >&2
-        die "the downloaded program does not run here (see above). If it mentions GLIBC, use
-monitor-oc-x86_64-musl (command line only) from https://github.com/$REPO/releases.
-If it says 'Permission denied', your temporary directory does not allow programs: run
-this again with TMPDIR=\$HOME/.cache"
+        die "the downloaded program does not run here (see above). It needs glibc 2.35 or
+newer. If it says 'Permission denied', your temporary directory does not allow
+programs: run this again with TMPDIR=\$HOME/.cache"
     fi
     say "Downloaded $version."
     "$tmp/$ASSET" "$action" ${flags:+"$flags"} </dev/null

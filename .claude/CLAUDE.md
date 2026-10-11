@@ -31,14 +31,18 @@ merged into `testing` or `main`. Keep the static CLI build free of new dependenc
   ready and wait. Stable only ever gets builds the owner has run on his own device.
 - The testing branch's VERSION must always be **higher** than main's, or test devices fall back to main.
   Never delete the `testing` branch.
+- **No GitHub releases, tags or packages (the owner's call, like Ally Hub).** Distribution is the `dist`
+  branch: every push to `main` or `testing` that passes CI is built and published there by the `publish`
+  job, in `stable/` or `testing/` (binary `monitor-oc-x86_64`, its `.sha256`, `VERSION`), as one commit
+  that is force-replaced each time. install.sh and `src/update.rs` read from there. Never create releases
+  or tags, and never commit binaries anywhere else.
 - **Releasing a test build:** bump the revision in VERSION, add a `docs/CHANGELOG.md` entry, merge into
-  `testing` (via a PR once CI is green), then tag that commit `v<VERSION>` (e.g. `v0.2.0.2`) and push the tag.
-  CI checks the tag against VERSION and publishes four-part tags as **pre-releases** (never "latest"), so
-  install.sh and Stable devices don't see them. Devices only find a build once its release assets exist; until
-  then they report it as still building.
+  `testing` via a PR once CI is green. The push publishes `dist/testing`.
 - **Shipping ("ship it"):** bump `Cargo.toml` to the next x.y.z (patch for fixes, minor for real features),
-  set VERSION to the same, update `Cargo.lock`'s monitor-oc version, merge testing into main, tag `v<x.y.z>`
-  on main (a normal, latest release), then reset `testing` to main so the next cycle starts at x.y.z.1.
+  set VERSION to the same, update `Cargo.lock`'s monitor-oc version, merge testing into main (publishes
+  `dist/stable`), then reset `testing` to main so the next cycle starts at x.y.z.1. The first ship after
+  the switch to `dist` also retires the old v0.1.0/v0.2.0 GitHub releases and tags (old main's install.sh
+  still points at them until then).
 - Leaving Testing: the app's Updates page offers "Go back to Stable x.y.z" (`update::install` of an older
   build); `monitor-oc update --channel stable` does the same.
 
@@ -54,7 +58,14 @@ merged into `testing` or `main`. Keep the static CLI build free of new dependenc
   binary is broken.
 - Downloads are checked against the release's `.sha256` and must report the expected `--version` before
   anything is replaced. Never change the update source (`update::REPO`, branch names, asset names).
-- Overclock safety stays as it is: every rate is tried before it is kept and trials undo themselves.
+- Overclock safety: during a built-in screen trial the Lua profile holds every untested rate at stock;
+  the app unlocks one (`live`, `live_until`, `live_pid` in the state file) for `live::CONFIRM_SECS` (10 s),
+  then after the first keep until the double check at `live::RECHECK_SECS` (5 min). No answer reverts.
+  `monitor-oc panel watchdog` (started via systemd-run outside the app's process tree) restarts Game Mode
+  if the app dies or misses a deadline. External `test` uses the same 10 s + 5 min checks. Never shorten
+  these, remove a check, or let a rate become permanent without both keeps.
+- `uninstall` removes everything by default (settings and the Game Mode profile included);
+  `--keep-settings` keeps them, `--purge` is accepted for old scripts.
 
 ## Game Mode
 
