@@ -16,6 +16,10 @@ grep -E 'panicked at [^ ]+\.rs:[0-9]+' "$out" | head -n 20 | while IFS= read -r 
     loc=$(printf '%s\n' "$line" | sed -E 's/.*panicked at ([^ :]+\.rs):([0-9]+).*/\1 \2/')
     printf '::error file=%s,line=%s::%s\n' "${loc% *}" "${loc#* }" "$line"
 done
+# Lines test helpers print for each failed check (the Lua harness).
+grep -E '^FAIL: ' "$out" | head -n 20 | while IFS= read -r line; do
+    printf '::error::%s\n' "$line"
+done
 # Errors without a location (e.g. a failed build script) still get one line.
 if [ "$status" -ne 0 ]; then
     grep -E '^error' "$out" | head -n 5 | while IFS= read -r line; do

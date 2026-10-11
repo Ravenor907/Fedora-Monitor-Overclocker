@@ -228,6 +228,7 @@ ours.dynamic_modegen = function(base_mode, refresh)
     if not allowed(refresh) then
         -- Not being tested right now (or the test timed out): stay at stock.
         report.held_back = refresh
+        save_report()
         return ours.dynamic_modegen(base_mode, stock_max)
     end
     report.held_back = nil
