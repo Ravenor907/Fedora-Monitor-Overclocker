@@ -126,6 +126,10 @@ main() {
     fi
     base="$SITE/$dir"
     label="the $dir build of Monitor OC"
+    if ! fetch "$base/VERSION?t=$t" "$tmp/VERSION" quiet 2>/dev/null; then
+        die "no build is published yet at $SITE (the project's build site is not online).
+Try again in a few minutes. If it keeps failing, report it at https://github.com/Ravenor907/monitor-oc/issues"
+    fi
     say "Downloading $label..."
     fetch "$base/$ASSET?t=$t" "$tmp/$ASSET" || die "download failed: $base/$ASSET"
     fetch "$base/$ASSET.sha256?t=$t" "$tmp/$ASSET.sha256" || die "download failed: $base/$ASSET.sha256"
