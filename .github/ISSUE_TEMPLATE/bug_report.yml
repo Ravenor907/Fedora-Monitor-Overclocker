@@ -1,0 +1,44 @@
+name: Bug report
+description: Something in Monitor OC isn't working
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! The **Diagnostics** page (or `monitor-oc doctor`) often explains the problem on its own.
+  - type: input
+    id: version
+    attributes:
+      label: Monitor OC version
+      description: Shown at the bottom of the sidebar, or `monitor-oc --version`.
+      placeholder: "0.2.0.1 (testing)"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System and device
+      placeholder: "SteamOS 3.9, ROG Xbox Ally X"
+  - type: dropdown
+    id: screen
+    attributes:
+      label: Which screen?
+      options: ["Built-in screen", "External monitor", "Not about a screen (install, updates, app)"]
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Where did it happen?
+      options: ["Game Mode", "Desktop Mode", "Both", "Not sure"]
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Diagnostics report
+      description: Paste "Copy report" from the Diagnostics page, or the output of `monitor-oc doctor`.
+      render: text

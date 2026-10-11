@@ -23,6 +23,9 @@ pub fn show(ui: &mut Ui, view: &View, out: &mut Vec<Action>) {
         if button(ui, "Copy report", Kind::Primary).clicked() {
             out.push(Action::Copy(report(view)));
         }
+        if !view.demo && button(ui, "Report a problem…", Kind::Secondary).clicked() {
+            out.push(Action::ReportProblem("Diagnostics".into()));
+        }
         ui.add_space(8.0);
         let (fail, warn) = (count(Level::Fail), count(Level::Warn));
         if fail > 0 {
@@ -83,7 +86,7 @@ pub fn report(view: &View) -> String {
     let snap = view.snap;
     let mut out = format!(
         "monitor-oc {}{}\nSession: {}\n",
-        env!("CARGO_PKG_VERSION"),
+        crate::update::label(),
         if view.demo { " (demo data)" } else { "" },
         if view.game_mode {
             "Game Mode"

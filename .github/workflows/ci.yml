@@ -1,13 +1,22 @@
 name: CI
 
+# One branch: main. Every push that passes is built and published on the
+# project's GitHub Pages site (no releases, packages or extra branches):
+# testing/ always gets the new build; stable/ only when VERSION is a Stable
+# version (x.y.z, which only the owner decides). install.sh and the app's
+# updater download from there.
+
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,92 +36,103 @@ jobs:
       # at runtime.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends luajit desktop-file-utils shellcheck
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo clippy --all-targets --no-default-features -- -D warnings
-      - run: cargo test
-      - run: cargo test --no-default-features
-      - run: shellcheck install.sh
+      - run: .github/scripts/annotate.sh cargo clippy --all-targets --message-format=short -- -D warnings
+      - run: .github/scripts/annotate.sh cargo clippy --all-targets --no-default-features --message-format=short -- -D warnings
+      - run: .github/scripts/annotate.sh cargo test
+      - run: .github/scripts/annotate.sh cargo test --no-default-features
+      - run: shellcheck install.sh .github/scripts/*.sh
       - run: desktop-file-validate packaging/Install-Monitor-OC.desktop
 
   build:
     needs: check
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # The app (GUI + CLI). Built on the oldest supported Ubuntu so it
-          # only needs glibc 2.35, which SteamOS, Fedora and Bazzite all exceed.
-          - name: monitor-oc-x86_64
-            os: ubuntu-22.04
-            target: ""
-            args: ""
-            out: target/release/monitor-oc
-          # Command line only and fully static: runs on any x86_64 Linux.
-          - name: monitor-oc-x86_64-musl
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            args: --no-default-features --target x86_64-unknown-linux-musl
-            out: target/x86_64-unknown-linux-musl/release/monitor-oc
-    runs-on: ${{ matrix.os }}
+    # The oldest supported Ubuntu, so the app only needs glibc 2.35, which
+    # SteamOS, Fedora and Bazzite all exceed.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.name }}
-      - run: cargo build --release --locked ${{ matrix.args }}
+      - run: cargo build --release --locked
       - name: Package
         run: |
-          mkdir -p dist
-          cp "${{ matrix.out }}" "dist/${{ matrix.name }}"
-          cd dist
-          sha256sum "${{ matrix.name }}" > "${{ matrix.name }}.sha256"
-          cat "${{ matrix.name }}.sha256"
-          "./${{ matrix.name }}" --version
-      # Install into a throwaway home and remove again. A build with the
-      # `gui` subcommand must add the menu entry; a CLI-only build must not.
+          mkdir -p out
+          cp target/release/monitor-oc out/monitor-oc-x86_64
+          cp VERSION out/VERSION
+          cd out
+          sha256sum monitor-oc-x86_64 > monitor-oc-x86_64.sha256
+          ./monitor-oc-x86_64 --version
+          test "$(./monitor-oc-x86_64 --version)" = "monitor-oc $(tr -d '[:space:]' < VERSION)"
+      # Install into a throwaway home and remove again.
       - name: Smoke-test install and uninstall
         env:
           HOME: ${{ runner.temp }}/home
         run: |
           mkdir -p "$HOME"
-          bin="dist/${{ matrix.name }}"
-          entry="$HOME/.local/share/applications/io.github.ravenor907.MonitorOC.desktop"
-          "$bin" install
+          out/monitor-oc-x86_64 install
           find "$HOME" -type f | sort
           test -x "$HOME/.local/bin/monitor-oc"
-          if "$bin" help gui >/dev/null 2>&1; then test -f "$entry"; else test ! -e "$entry"; fi
+          test -f "$HOME/.local/share/applications/io.github.ravenor907.MonitorOC.desktop"
           "$HOME/.local/bin/monitor-oc" uninstall
           test -z "$(find "$HOME" -type f ! -name mimeinfo.cache)"
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}
-          path: dist/*
+          name: monitor-oc
+          path: out/*
           if-no-files-found: error
 
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          path: dist
-          merge-multiple: true
-      - run: ls -l dist
-      - uses: softprops/action-gh-release@v2
+          name: monitor-oc
+          path: new
+      - name: Assemble the site
+        run: |
+          site=$(grep -oP 'pub const SITE: &str = "\K[^"]+' src/update.rs)
+          version=$(tr -d '[:space:]' < new/VERSION)
+          mkdir -p _site/testing _site/stable
+          cp new/* _site/testing/
+          case $version in
+            *.*.*.*)
+              # A test build: keep the Stable build that is live now.
+              for f in VERSION monitor-oc-x86_64 monitor-oc-x86_64.sha256; do
+                curl -fsSL "$site/stable/$f?t=$(date +%s)" -o "_site/stable/$f" || rm -f "_site/stable/$f"
+              done
+              if [ -f _site/stable/VERSION ] && (cd _site/stable && sha256sum -c --status monitor-oc-x86_64.sha256); then
+                echo "Stable stays at $(cat _site/stable/VERSION)"
+              else
+                rm -rf _site/stable
+                echo "Nothing has shipped to Stable yet"
+              fi
+              ;;
+            *) cp new/* _site/stable/ ;;
+          esac
+          printf '<!doctype html><meta charset="utf-8"><title>Monitor OC builds</title>\n<p>Monitor OC builds for install.sh and the app updater. Install: see <a href="https://github.com/%s">the project</a>.</p>\n' "$GITHUB_REPOSITORY" > _site/index.html
+          touch _site/.nojekyll
+          find _site -type f | sort
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
         with:
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            dist/monitor-oc-x86_64
-            dist/monitor-oc-x86_64.sha256
-            dist/monitor-oc-x86_64-musl
-            dist/monitor-oc-x86_64-musl.sha256
-            install.sh
-            packaging/Install-Monitor-OC.desktop
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4
+      - name: Check what devices will see
+        run: |
+          site=$(grep -oP 'pub const SITE: &str = "\K[^"]+' src/update.rs)
+          sleep 20
+          got=$(curl -fsSL "$site/testing/VERSION?t=$(date +%s)")
+          echo "testing/VERSION at $site: $got"
+          test "$got" = "$(tr -d '[:space:]' < new/VERSION)"

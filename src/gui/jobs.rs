@@ -17,8 +17,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// How long `test` waits before reverting when run from the app.
-pub const TEST_SECONDS: u64 = 20;
+/// How long `test` waits for each "keep" when run from the app.
+pub const TEST_SECONDS: u64 = 10;
+/// How long after the first "keep" `test` asks again.
+pub const RECHECK_SECONDS: u64 = 300;
 
 /// The line `monitor-oc test` prints once the new EDID is live.
 const LIVE_MARKER: &str = "Live override active on";
@@ -70,7 +72,12 @@ impl Kind {
             } => {
                 let mut args = vec!["test".to_string()];
                 args.extend(target(connector, mode, strategy, *preferred));
-                args.extend(["--seconds".into(), TEST_SECONDS.to_string()]);
+                args.extend([
+                    "--seconds".into(),
+                    TEST_SECONDS.to_string(),
+                    "--recheck".into(),
+                    RECHECK_SECONDS.to_string(),
+                ]);
                 args
             }
             Kind::Apply {
@@ -122,13 +129,27 @@ pub enum Event {
     Line(String),
     /// The test mode is live; the countdown started.
     Live,
+    /// Kept once; waiting for the double check.
+    RecheckWait,
+    /// The double check: keep again or it reverts.
+    Recheck,
     Exit(Outcome),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Confirm,
+    /// Kept once, until the double check.
+    Waiting,
+    Recheck,
 }
 
 pub struct Job {
     pub id: u64,
     pub kind: Kind,
     pub live_since: Option<Instant>,
+    /// Which question the test is at, and since when.
+    pub phase: Phase,
     /// The user already answered keep/revert.
     pub answered: Option<bool>,
     pub outcome: Option<Outcome>,
@@ -140,13 +161,24 @@ impl Job {
         self.outcome.is_none()
     }
 
-    /// Seconds before the root process reverts the test on its own.
+    /// Seconds before the root process reverts (or asks again) on its own.
     pub fn seconds_left(&self) -> Option<u64> {
         let since = self.live_since?;
-        Some(TEST_SECONDS.saturating_sub(since.elapsed().as_secs()))
+        let total = match self.phase {
+            Phase::Confirm | Phase::Recheck => TEST_SECONDS,
+            Phase::Waiting => RECHECK_SECONDS,
+        };
+        Some(total.saturating_sub(since.elapsed().as_secs()))
     }
 
-    /// Answer `test`'s prompt: keep until reboot, or revert now.
+    /// Move to the next question; its countdown starts now.
+    pub fn enter(&mut self, phase: Phase) {
+        self.phase = phase;
+        self.live_since = Some(Instant::now());
+        self.answered = None;
+    }
+
+    /// Answer `test`'s current prompt: keep, or revert now.
     pub fn answer(&mut self, keep: bool) {
         if self.answered.is_none() {
             self.answered = Some(keep);
@@ -177,6 +209,7 @@ pub fn start(backend: &Backend, id: u64, kind: Kind) -> Job {
         id,
         kind,
         live_since: None,
+        phase: Phase::Confirm,
         answered: None,
         outcome: None,
         input,
@@ -245,10 +278,18 @@ fn forward(
     thread::spawn(move || {
         let Some(pipe) = pipe else { return };
         for line in BufReader::new(pipe).lines().map_while(Result::ok) {
-            let live = line.starts_with(LIVE_MARKER);
+            let event = if line.starts_with(LIVE_MARKER) {
+                Some(Event::Live)
+            } else if line.starts_with(crate::RECHECK_WAIT_MARKER) {
+                Some(Event::RecheckWait)
+            } else if line.starts_with(crate::RECHECK_MARKER) {
+                Some(Event::Recheck)
+            } else {
+                None
+            };
             emit(Event::Line(line));
-            if live {
-                emit(Event::Live);
+            if let Some(event) = event {
+                emit(event);
             }
         }
     })
@@ -311,14 +352,38 @@ fn simulate(
             ));
             emit(Event::Live);
             world.lock().unwrap().set_override(true);
-            match input.recv_timeout(Duration::from_secs(TEST_SECONDS)) {
-                Ok(line) if line.trim() == "keep" => say(&format!(
+            let kept = |input: &mpsc::Receiver<String>| {
+                matches!(
+                    input.recv_timeout(Duration::from_secs(TEST_SECONDS)),
+                    Ok(line) if line.trim() == "keep"
+                )
+            };
+            let mut keep = kept(&input);
+            if keep {
+                say(&format!(
+                    "{} {RECHECK_SECONDS} s: use it normally.",
+                    crate::RECHECK_WAIT_MARKER
+                ));
+                emit(Event::RecheckWait);
+                keep = match input.recv_timeout(Duration::from_secs(RECHECK_SECONDS)) {
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        say(&format!(
+                            "{} still good? Type 'keep' within {TEST_SECONDS} s.",
+                            crate::RECHECK_MARKER
+                        ));
+                        emit(Event::Recheck);
+                        kept(&input)
+                    }
+                    _ => false,
+                };
+            }
+            if keep {
+                say(&format!(
                     "Kept until reboot. Make it permanent with:\n  sudo monitor-oc apply {connector} {mode}"
-                )),
-                _ => {
-                    world.lock().unwrap().set_override(false);
-                    say("Reverted to the monitor's own EDID.");
-                }
+                ));
+            } else {
+                world.lock().unwrap().set_override(false);
+                say("Reverted to the monitor's own EDID.");
             }
         }
         Kind::Apply {
@@ -401,7 +466,7 @@ mod tests {
         };
         assert_eq!(
             kind.args().join(" "),
-            "test DP-1 2560x1440@165 --timing cvt-rb2 --preferred --seconds 20"
+            "test DP-1 2560x1440@165 --timing cvt-rb2 --preferred --seconds 10 --recheck 300"
         );
         assert_eq!(
             Kind::Remove {

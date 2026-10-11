@@ -1,0 +1,19 @@
+name: Suggestion
+description: An idea for Monitor OC
+labels: ["suggestion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Monitor OC is a personal project, so not every idea will make it in, but every suggestion gets read and answered.
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it would help
+      description: Which device or screen, and what problem it solves.

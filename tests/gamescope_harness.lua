@@ -153,6 +153,21 @@ local m = d.dynamic_modegen(preferred_mode(), 100)
 check(m.stock_generated, "<= stock max should use the stock modegen")
 check(math.abs(refresh_of(m) - 100) < 0.5, "stock 100 Hz mode refresh " .. refresh_of(m))
 
+-- Not being tested: trial rates are held back at the stock maximum.
+m = d.dynamic_modegen(preferred_mode(), 135)
+check(math.abs(refresh_of(m) - 120) < 0.5, "untested trial rate should be held at 120, got " .. refresh_of(m))
+check(read_kv(report_path).held_back == "135", "report should record the held-back rate")
+
+-- Being tested, but for a different rate or past its deadline: still held back.
+write(state_path, "max=0\nmethod=clock\ntrial=135\ntrial_state=running\nlive=130\nlive_until=" .. (os.time() + 60) .. "\n")
+m = d.dynamic_modegen(preferred_mode(), 135)
+check(math.abs(refresh_of(m) - 120) < 0.5, "a different live rate must not unlock 135")
+write(state_path, "max=0\nmethod=clock\ntrial=135\ntrial_state=running\nlive=135\nlive_until=" .. (os.time() - 1) .. "\n")
+m = d.dynamic_modegen(preferred_mode(), 135)
+check(math.abs(refresh_of(m) - 120) < 0.5, "an expired test must not unlock 135")
+
+-- Being tested: the real rate.
+write(state_path, "max=0\nmethod=clock\ntrial=135\ntrial_state=running\nlive=135\nlive_until=" .. (os.time() + 60) .. "\n")
 m = d.dynamic_modegen(preferred_mode(), 135)
 check(math.abs(refresh_of(m) - 135) < 0.2, "clock method 135 Hz refresh " .. refresh_of(m))
 check(m.vtotal == VTOTAL, "clock method should keep the native blanking")
@@ -162,6 +177,12 @@ check(read_kv(report_path).last_mode == "1920x1080@135", "report should record t
 
 m = d.dynamic_modegen(preferred_mode(), 150)
 check(m.clock == CLOCK and m.vtotal == VTOTAL, "above the limit should return the native mode")
+
+-- Confirmed in this session: the rate stays available without a test.
+write(state_path, "max=135\nmethod=clock\n")
+m = d.dynamic_modegen(preferred_mode(), 135)
+check(math.abs(refresh_of(m) - 135) < 0.2, "confirmed 135 Hz should be used without a test")
+write(state_path, "max=0\nmethod=clock\ntrial=135\ntrial_state=running\n")
 
 -- 3. Gamescope starting again without a confirmation drops the trial.
 load(true)

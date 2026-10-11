@@ -253,6 +253,18 @@ pub struct State {
     pub max: u32,
     pub method: Method,
     pub trial: Option<(u32, TrialState)>,
+    /// A trial rate being tested right now; Gamescope only really uses
+    /// untested trial rates while this is set and not past its deadline.
+    pub live: Option<Live>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Live {
+    pub hz: u32,
+    /// Unix time after which the rate is held back again.
+    pub until: u64,
+    /// The process running the test; the watchdog reverts if it dies.
+    pub pid: u32,
 }
 
 impl State {
@@ -277,6 +289,17 @@ impl State {
                 Method::Clock
             },
             trial: get("trial").and_then(|v| v.parse().ok()).zip(trial_state),
+            live: match (
+                get("live").and_then(|v| v.parse().ok()),
+                get("live_until").and_then(|v| v.parse().ok()),
+            ) {
+                (Some(hz), Some(until)) => Some(Live {
+                    hz,
+                    until,
+                    pid: get("live_pid").and_then(|v| v.parse().ok()).unwrap_or(0),
+                }),
+                _ => None,
+            },
         }
     }
 
@@ -289,6 +312,12 @@ impl State {
                 TrialState::Expired => "expired",
             };
             out += &format!("trial={hz}\ntrial_state={state}\n");
+            if let Some(live) = self.live {
+                out += &format!(
+                    "live={}\nlive_until={}\nlive_pid={}\n",
+                    live.hz, live.until, live.pid
+                );
+            }
         }
         out
     }
@@ -375,11 +404,61 @@ fn modified_secs(path: &Path) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
+/// Written through a temporary file and a rename: Gamescope's script reads
+/// the state on every mode switch and must never see half a file.
 fn write_file(path: &Path, text: &str) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let dir = path.parent().context("path has no parent")?;
+    fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = dir.join(format!(".{name}.new-{}", std::process::id()));
+    let result = fs::write(&tmp, text).and_then(|()| fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    fs::write(path, text).with_context(|| format!("writing {}", path.display()))
+    result.with_context(|| format!("writing {}", path.display()))
+}
+
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Unlock `hz` of the running trial for `secs` seconds.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub fn start_live(paths: &Paths, hz: u32, secs: u64, pid: u32) -> Result<()> {
+    let mut state = State::load(paths);
+    match state.trial {
+        Some((trial, TrialState::Running)) if hz <= trial => {}
+        Some((trial, TrialState::Running)) => bail!("{hz} Hz is above the {trial} Hz trial"),
+        _ => bail!("no trial is running in this Game Mode session"),
+    }
+    state.live = Some(Live {
+        hz,
+        until: now_secs() + secs,
+        pid,
+    });
+    state.save(paths)
+}
+
+/// Move the deadline of the rate being tested to `secs` from now.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub fn extend_live(paths: &Paths, secs: u64) -> Result<()> {
+    let mut state = State::load(paths);
+    let Some(live) = state.live.as_mut() else {
+        bail!("no rate is being tested");
+    };
+    live.until = now_secs() + secs;
+    state.save(paths)
+}
+
+/// Stop testing: the trial rates are held back again from the next switch.
+pub fn end_live(paths: &Paths) -> Result<()> {
+    let mut state = State::load(paths);
+    if state.live.take().is_some() {
+        state.save(paths)?;
+    }
+    Ok(())
 }
 
 /// A Lua string literal for arbitrary text.
@@ -459,6 +538,7 @@ pub fn confirm(paths: &Paths) -> Result<u32> {
     }
     state.max = hz;
     state.trial = None;
+    state.live = None;
     state.save(paths)?;
     Ok(hz)
 }
@@ -466,6 +546,7 @@ pub fn confirm(paths: &Paths) -> Result<u32> {
 pub fn discard(paths: &Paths) -> Result<()> {
     let mut state = State::load(paths);
     state.trial = None;
+    state.live = None;
     state.save(paths)
 }
 
@@ -504,12 +585,18 @@ mod tests {
             max: 130,
             method: Method::Porch,
             trial: Some((140, TrialState::Running)),
+            live: Some(Live {
+                hz: 135,
+                until: 1_760_000_000,
+                pid: 42,
+            }),
         };
         assert_eq!(State::parse(&s.render()), s);
         assert_eq!(State::parse(""), State::default());
         // The Lua side writes keys in the same format.
         let lua = "max=0\nmethod=clock\ntrial=135\ntrial_state=expired\n";
         assert_eq!(State::parse(lua).trial, Some((135, TrialState::Expired)));
+        assert_eq!(State::parse(lua).live, None);
     }
 
     #[test]

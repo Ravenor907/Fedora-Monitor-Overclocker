@@ -7,10 +7,13 @@
 mod app;
 mod data;
 mod demo;
+mod gamepad;
 mod jobs;
 mod pages;
+mod panel_test;
 mod prefs;
 mod theme;
+mod updates;
 mod widgets;
 
 use anyhow::{Result, anyhow};
@@ -30,6 +33,8 @@ pub enum Page {
     Verify,
     /// `monitor-oc doctor`.
     Diagnostics,
+    /// Updates, error reports and uninstalling.
+    Settings,
 }
 
 #[derive(Default)]
@@ -50,8 +55,19 @@ pub fn display_available() -> bool {
 }
 
 pub fn run(opts: Options) -> Result<()> {
+    rollback_if_failing();
     let demo = opts.demo || std::env::var("MONITOR_OC_DEMO").is_ok_and(|v| v == "1");
     let game_mode = crate::gamescope::in_game_mode();
+    if game_mode && std::env::var_os("WINIT_X11_SCALE_FACTOR").is_none() {
+        // Gamescope's Xwayland has no Xft.dpi, so winit would guess the scale
+        // from the panel's physical size: about 3.25 on a 7" 1080p handheld.
+        // That made every window size and font ~3x too big (and the window
+        // larger than the screen) before our own 150% handheld zoom applied.
+        // Gamescope already shows the window 1:1, so use physical pixels.
+        //
+        // SAFETY: called before eframe or anything else starts a thread.
+        unsafe { std::env::set_var("WINIT_X11_SCALE_FACTOR", "1") };
+    }
     let fullscreen = opts.fullscreen || game_mode;
     let viewport = egui::ViewportBuilder::default()
         .with_app_id(APP_ID)
@@ -76,4 +92,24 @@ pub fn run(opts: Options) -> Result<()> {
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, setup)))),
     )
     .map_err(|e| anyhow!("could not open the window: {e}"))
+}
+
+/// A freshly updated build that keeps failing to start is rolled back here,
+/// before any window opens, and the restored version is started in its place.
+fn rollback_if_failing() {
+    use std::os::unix::process::CommandExt;
+    let Ok(paths) = crate::update::Paths::for_current_user() else {
+        return;
+    };
+    let Some(bad) = crate::update::startup_check(&paths) else {
+        return;
+    };
+    let err = std::process::Command::new(&paths.binary)
+        .args(std::env::args_os().skip(1))
+        .env("MONITOR_OC_ROLLED_BACK", &bad)
+        .exec();
+    eprintln!(
+        "Rolled back from {bad}, but could not start {}: {err}",
+        paths.binary.display()
+    );
 }

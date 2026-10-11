@@ -584,6 +584,7 @@ pub enum Icon {
     Monitor,
     Stopwatch,
     Pulse,
+    Update,
 }
 
 pub fn paint_icon(ui: &Ui, rect: Rect, icon: Icon, color: Color32) {
@@ -625,6 +626,24 @@ pub fn paint_icon(ui: &Ui, rect: Rect, icon: Icon, color: Color32) {
             painter.line_segment([at(-0.12, -0.46), at(0.12, -0.46)], stroke);
             painter.line_segment([at(0.0, -0.46), at(0.0, -0.32)], stroke);
             painter.line_segment([center, center + vec2(0.16, -0.16) * s], stroke);
+        }
+        Icon::Update => {
+            // A circular arrow, like a refresh symbol.
+            let r = s * 0.36;
+            let points: Vec<Pos2> = (0..=28)
+                .map(|i| {
+                    let a = -1.2 + (i as f32 / 28.0) * 5.0;
+                    c + vec2(a.cos(), a.sin()) * r
+                })
+                .collect();
+            let tip = points[points.len() - 1];
+            painter.add(Shape::line(points, stroke));
+            let back: f32 = -1.2 + 5.0;
+            let along = vec2(-back.sin(), back.cos());
+            let out = vec2(back.cos(), back.sin());
+            let len = s * 0.2;
+            painter.line_segment([tip, tip - along * len + out * len * 0.6], stroke);
+            painter.line_segment([tip, tip - along * len - out * len * 0.6], stroke);
         }
         Icon::Pulse => {
             let points = [
