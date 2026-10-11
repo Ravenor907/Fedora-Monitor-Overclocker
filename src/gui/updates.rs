@@ -368,18 +368,15 @@ pub fn show(ui: &mut Ui, updates: &Updates, out: &mut Vec<Action>) {
         });
         ui.add_space(10.0);
         row(ui, |ui| {
-            match &updates.status {
-                Status::Available(b) => {
-                    if button_if(ui, !busy, format!("Install {b}"), Kind::Primary).clicked() {
-                        out.push(Action::Update(UpdateAction::Install(*b)));
-                    }
-                }
-                Status::Installed(_) => {
-                    if button(ui, "Restart now", Kind::Primary).clicked() {
-                        out.push(Action::Update(UpdateAction::Restart));
-                    }
-                }
-                _ => {}
+            if let Status::Available(b) = &updates.status
+                && button_if(ui, !busy, format!("Install {b}"), Kind::Primary).clicked()
+            {
+                out.push(Action::Update(UpdateAction::Install(*b)));
+            }
+            if matches!(updates.status, Status::Installed(_))
+                && button(ui, "Restart now", Kind::Primary).clicked()
+            {
+                out.push(Action::Update(UpdateAction::Restart));
             }
             if button_if(ui, !busy, "Check now", Kind::Secondary).clicked() {
                 out.push(Action::Update(UpdateAction::Check));

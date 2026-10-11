@@ -28,7 +28,9 @@ use std::process::Command;
 pub const REPO: &str = "Ravenor907/monitor-oc";
 
 /// Test builds per Stable version before a cycle has to ship (the owner's
-/// rule: needing more means a cycle carries too much).
+/// rule: needing more means a cycle carries too much). Enforced by a test
+/// on VERSION.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const MAX_TEST_REVISIONS: u32 = 10;
 
 /// Starts of a freshly installed build that may end before it counts as
