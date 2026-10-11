@@ -25,7 +25,12 @@ pub enum Phase {
 #[derive(Debug)]
 pub enum Outcome {
     Kept(u32),
-    Reverted { hz: u32, why: String },
+    /// `failed`: something went wrong (worth a report), not just "no".
+    Reverted {
+        hz: u32,
+        why: String,
+        failed: bool,
+    },
 }
 
 pub struct PanelTest {
@@ -124,11 +129,11 @@ impl PanelTest {
                 }
                 Ok(Err(e)) => {
                     self.switched = None;
-                    self.revert(format!("Gamescope didn't switch ({e})"));
+                    self.go_back(format!("Gamescope didn't switch ({e})"), true);
                 }
                 Err(TryRecvError::Disconnected) => {
                     self.switched = None;
-                    self.revert("the switch didn't finish".into());
+                    self.go_back("the switch didn't finish".into(), true);
                 }
                 Err(TryRecvError::Empty) => {}
             }
@@ -158,7 +163,7 @@ impl PanelTest {
                 if let Some(paths) = &self.paths
                     && let Err(e) = gamescope::confirm(paths)
                 {
-                    self.revert(format!("it couldn't be saved ({e:#})"));
+                    self.go_back(format!("it couldn't be saved ({e:#})"), true);
                     return;
                 }
                 self.finish(Outcome::Kept(self.hz), live::restore);
@@ -169,6 +174,10 @@ impl PanelTest {
 
     /// Go back to the stock rate now.
     pub fn revert(&mut self, why: String) {
+        self.go_back(why, false);
+    }
+
+    fn go_back(&mut self, why: String, failed: bool) {
         if self.phase == Phase::Finishing {
             return;
         }
@@ -176,7 +185,7 @@ impl PanelTest {
             let _ = gamescope::end_live(paths);
         }
         let (hz, stock) = (self.hz, self.stock_max);
-        self.finish(Outcome::Reverted { hz, why }, move |saved| {
+        self.finish(Outcome::Reverted { hz, why, failed }, move |saved| {
             live::switch_back(stock, saved)
         });
     }

@@ -1,11 +1,12 @@
-//! The Updates page and the background work behind it (see `crate::update`
-//! for how channels, builds and rollbacks work).
+//! The Settings page (updates, error reports, uninstall) and the background
+//! work behind it. See `crate::update` and `crate::report`.
 
 use super::pages::{Action, Dialog, header, row};
 use super::theme::{bold, palette};
 use super::widgets::{
     Kind, banner, button, button_if, caption, card, dim, facts, segmented, toggle,
 };
+use crate::report::{self, Queued};
 use crate::update::{self, Build, Channel, Paths, Settings, Target};
 use eframe::egui::{self, RichText, Ui};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -41,6 +42,15 @@ pub enum UpdateAction {
     Auto(bool),
     Restart,
     Uninstall,
+    /// Automatic error reports on or off.
+    Reports(bool),
+    SaveKey,
+    RemoveKey,
+    /// "Report a problem": the user's words and the page it came from.
+    Report {
+        text: String,
+        page: String,
+    },
 }
 
 enum Msg {
@@ -51,6 +61,7 @@ enum Msg {
     Installed(Result<Build, String>),
     RolledBack(Result<String, String>),
     Uninstalled(Result<(), String>),
+    Reported(Queued, usize),
 }
 
 pub struct Updates {
@@ -68,6 +79,10 @@ pub struct Updates {
     /// Monitor OC was uninstalled; the app closes at this time.
     pub close_at: Option<std::time::Instant>,
     uninstalling: bool,
+    /// The access key being typed on the Settings page.
+    pub key_input: String,
+    has_key: bool,
+    reporting: bool,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     ctx: egui::Context,
@@ -96,14 +111,32 @@ impl Updates {
             toasts: Vec::new(),
             close_at: None,
             uninstalling: false,
+            key_input: String::new(),
+            has_key: false,
+            reporting: false,
             tx,
             rx,
             ctx: ctx.clone(),
         };
         if let Some(paths) = &updates.paths {
             let _ = update::sync_rescue(paths, updates.settings.channel);
+            updates.has_key = report::has_key(paths);
+            // Anything left from last time (a crash, or offline).
+            report::send_in_background();
         }
         if let Some(bad) = updates.rolled_back_at_start.clone() {
+            report::auto(
+                report::Kind::UpdateFailure,
+                &format!(
+                    "{} didn't start and was rolled back",
+                    update::label_of(&bad)
+                ),
+                &format!(
+                    "Build {bad} failed to start {} times in a row, so Monitor OC went back to {}.",
+                    update::MAX_FAILED_STARTS + 1,
+                    update::label()
+                ),
+            );
             updates.toasts.push((
                 false,
                 format!(
@@ -210,6 +243,14 @@ impl Updates {
                     ));
                 }
                 Msg::Installed(Err(e)) => {
+                    report::auto(
+                        report::Kind::UpdateFailure,
+                        &format!("Update didn't install: {e}"),
+                        &format!(
+                            "Installing an update from {} failed:\n\n{e}",
+                            update::label()
+                        ),
+                    );
                     self.toasts.push((false, format!("Update failed: {e}")));
                     self.status = Status::Failed(e);
                 }
@@ -233,6 +274,17 @@ impl Updates {
                     ));
                     self.close_at =
                         Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+                }
+                Msg::Reported(q, sent) => {
+                    self.reporting = false;
+                    self.toasts.push(match q {
+                        Queued::Queued(_) if sent > 0 => (true, "Report sent. Thanks!".to_string()),
+                        Queued::Queued(_) => (
+                            true,
+                            "Report saved; it goes out as soon as GitHub can be reached.".into(),
+                        ),
+                        other => (false, other.hint().to_string()),
+                    });
                 }
                 Msg::Uninstalled(Err(e)) => {
                     self.uninstalling = false;
@@ -294,7 +346,65 @@ impl Updates {
             }
             UpdateAction::Restart => self.restart(),
             UpdateAction::Uninstall => self.uninstall(),
+            UpdateAction::Reports(on) => {
+                let Some(paths) = &self.paths else {
+                    return;
+                };
+                let mut settings = self.settings;
+                settings.reports = on;
+                match paths.save_settings(&settings) {
+                    Ok(()) => self.settings = settings,
+                    Err(e) => self
+                        .toasts
+                        .push((false, format!("Could not save the setting: {e:#}"))),
+                }
+            }
+            UpdateAction::SaveKey => {
+                let Some(paths) = &self.paths else {
+                    return;
+                };
+                match report::save_key(paths, &self.key_input) {
+                    Ok(()) => {
+                        self.key_input.clear();
+                        self.has_key = true;
+                        self.toasts.push((true, "Access key saved.".into()));
+                        report::send_in_background();
+                    }
+                    Err(e) => self.toasts.push((false, format!("{e:#}"))),
+                }
+            }
+            UpdateAction::RemoveKey => {
+                if let Some(paths) = &self.paths
+                    && report::remove_key(paths).is_ok()
+                {
+                    self.has_key = false;
+                    self.toasts.push((true, "Access key removed.".into()));
+                }
+            }
+            UpdateAction::Report { text, page } => self.report(text, page),
         }
+    }
+
+    /// Send a "Report a problem" report on a background thread.
+    fn report(&mut self, text: String, page: String) {
+        let Some(paths) = self.paths.clone() else {
+            return;
+        };
+        if self.reporting {
+            return;
+        }
+        self.reporting = true;
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        let _ = thread::Builder::new().name("report".into()).spawn(move || {
+            let q = report::user_report(&paths, &text, &page);
+            let sent = if matches!(q, Queued::Queued(_)) {
+                report::upload(&paths).0
+            } else {
+                0
+            };
+            let _ = tx.send(Msg::Reported(q, sent));
+            ctx.request_repaint();
+        });
     }
 
     /// Run `monitor-oc uninstall` (everything, settings included).
@@ -348,11 +458,11 @@ impl Updates {
     }
 }
 
-pub fn show(ui: &mut Ui, updates: &Updates, out: &mut Vec<Action>) {
+pub fn show(ui: &mut Ui, updates: &mut Updates, out: &mut Vec<Action>) {
     header(
         ui,
-        "Updates",
-        "Monitor OC keeps itself up to date. Test builds get new fixes first.",
+        "Settings",
+        "Updates, error reports, and removing Monitor OC.",
     );
     let p = palette(ui.ctx());
     if !updates.available() {
@@ -477,6 +587,8 @@ pub fn show(ui: &mut Ui, updates: &Updates, out: &mut Vec<Action>) {
         });
     }
     ui.add_space(12.0);
+    reports_card(ui, updates, out);
+    ui.add_space(12.0);
     card(ui, |ui| {
         caption(ui, "Remove", p.text_faint);
         dim(
@@ -494,6 +606,55 @@ pub fn show(ui: &mut Ui, updates: &Updates, out: &mut Vec<Action>) {
         .clicked()
         {
             out.push(Action::Ask(Dialog::Uninstall));
+        }
+    });
+}
+
+fn reports_card(ui: &mut Ui, updates: &mut Updates, out: &mut Vec<Action>) {
+    let p = palette(ui.ctx());
+    card(ui, |ui| {
+        caption(ui, "Error reports", p.text_faint);
+        dim(
+            ui,
+            "Problems go to the developer as GitHub issues (nothing personal: your user and host \
+             names are taken out), so they can be fixed in the next test build.",
+        );
+        ui.add_space(6.0);
+        let mut on = updates.settings.reports;
+        if toggle(ui, &mut on, "Send error reports automatically").changed() {
+            out.push(Action::Update(UpdateAction::Reports(on)));
+        }
+        ui.add_space(6.0);
+        if updates.has_key {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("GitHub access key saved").color(p.good));
+                if button(ui, "Remove key", Kind::Ghost).clicked() {
+                    out.push(Action::Update(UpdateAction::RemoveKey));
+                }
+            });
+        } else {
+            caption(ui, "GitHub access key", p.text_faint);
+            ui.add(
+                egui::TextEdit::singleline(&mut updates.key_input)
+                    .password(true)
+                    .hint_text("github_pat_…")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(4.0);
+            if button_if(
+                ui,
+                !updates.key_input.trim().is_empty(),
+                "Save key",
+                Kind::Secondary,
+            )
+            .clicked()
+            {
+                out.push(Action::Update(UpdateAction::SaveKey));
+            }
+        }
+        ui.add_space(8.0);
+        if button_if(ui, !updates.reporting, "Report a problem…", Kind::Primary).clicked() {
+            out.push(Action::ReportProblem("Settings".into()));
         }
     });
 }

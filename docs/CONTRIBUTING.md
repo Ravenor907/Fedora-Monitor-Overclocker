@@ -6,7 +6,7 @@ Monitor OC is a personal project built for the owner's ROG Xbox Ally X. It's pub
   with the Diagnostics report.
 - **Have an idea?** Open a [Suggestion](https://github.com/Ravenor907/monitor-oc/issues/new?template=suggestion.yml).
   Every one gets a reply, but the owner decides what goes into the app.
-- **Pull requests** are welcome but may not be merged. Please open a suggestion first, and target the
-  `testing` branch: everything is tried there before it reaches Stable.
+- **Pull requests** are welcome but may not be merged. Please open a suggestion first. Everything goes out
+  as a test build first and reaches Stable only when the owner ships it.
 - Before submitting code: `cargo fmt`, `cargo clippy --all-targets -- -D warnings` and `cargo test`. See
   [How it works](HOW-IT-WORKS.md) for building.

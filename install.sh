@@ -1,6 +1,6 @@
 #!/bin/sh
 # Installs Monitor OC for the current user, no sudo needed: downloads the
-# current build from the repository's dist branch, checks its SHA-256 and runs
+# current build from the project's site (published by CI), checks its SHA-256 and runs
 # `monitor-oc install`, which puts the program in ~/.local/bin and adds
 # "Monitor OC" to the app menu. The app keeps itself up to date after that.
 #
@@ -11,7 +11,7 @@
 
 set -eu
 
-REPO="Ravenor907/monitor-oc"
+SITE="https://ravenor907.github.io/Monitor-OC"
 ASSET="monitor-oc-x86_64"
 
 say() { printf '%s\n' "$*"; }
@@ -110,8 +110,6 @@ main() {
     testing) dir=testing ;;
     *) die "MONITOR_OC_CHANNEL must be stable or testing" ;;
     esac
-    base="https://raw.githubusercontent.com/$REPO/dist/$dir"
-    label="the $dir build of Monitor OC"
 
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
         die "this needs curl or wget to download Monitor OC"
@@ -120,9 +118,17 @@ main() {
     trap 'rm -rf "$tmp"' EXIT
     trap 'exit 130' INT TERM
 
+    # The query string skips the site's cache, so the build and its checksum match.
+    t=$(date +%s)
+    if [ "$dir" = stable ] && ! fetch "$SITE/stable/VERSION?t=$t" "$tmp/VERSION" quiet 2>/dev/null; then
+        say "Nothing has shipped to Stable yet, so this installs the current test build."
+        dir=testing
+    fi
+    base="$SITE/$dir"
+    label="the $dir build of Monitor OC"
     say "Downloading $label..."
-    fetch "$base/$ASSET" "$tmp/$ASSET" || die "download failed: $base/$ASSET"
-    fetch "$base/$ASSET.sha256" "$tmp/$ASSET.sha256" || die "download failed: $base/$ASSET.sha256"
+    fetch "$base/$ASSET?t=$t" "$tmp/$ASSET" || die "download failed: $base/$ASSET"
+    fetch "$base/$ASSET.sha256?t=$t" "$tmp/$ASSET.sha256" || die "download failed: $base/$ASSET.sha256"
     verify
     chmod +x "$tmp/$ASSET"
 

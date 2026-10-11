@@ -33,6 +33,8 @@ pub enum Action {
         hz: u32,
         stock_max: u32,
     },
+    /// Open "Report a problem", saying which page it came from.
+    ReportProblem(String),
 }
 
 /// Changes that need a second, deliberate "yes".

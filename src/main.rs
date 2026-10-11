@@ -5,8 +5,10 @@ mod gamescope;
 #[cfg(feature = "gui")]
 mod gui;
 mod install;
+mod json;
 mod live;
 mod plan;
+mod report;
 mod service;
 mod state;
 mod system;
@@ -140,6 +142,20 @@ enum Cmd {
         rollback: bool,
     },
     /// Remove what `install` added.
+    /// Report a problem to the developer (a GitHub issue), or send waiting reports.
+    ///
+    /// Needs a GitHub access key (`--set-key`). With a message, it is sent
+    /// with the diagnostics; without one, reports waiting to go out are sent.
+    Report {
+        /// What happened.
+        message: Vec<String>,
+        /// Save the GitHub access key (read from the terminal).
+        #[arg(long, conflicts_with = "remove_key")]
+        set_key: bool,
+        /// Forget the access key.
+        #[arg(long)]
+        remove_key: bool,
+    },
     /// Remove Monitor OC: the program, menu entries, update data, its Game Mode
     /// profile and settings (the built-in screen goes back to stock).
     Uninstall {
@@ -204,6 +220,7 @@ struct Target {
 }
 
 fn main() {
+    report::install_panic_hook();
     if let Err(e) = run(Cli::parse()) {
         eprintln!("error: {e:#}");
         std::process::exit(1);
@@ -289,6 +306,11 @@ fn run(cli: Cli) -> Result<()> {
             channel,
             rollback,
         } => update::command(check, channel, rollback),
+        Cmd::Report {
+            message,
+            set_key,
+            remove_key,
+        } => report::command(&message, set_key, remove_key),
         Cmd::Install => install::install(),
         Cmd::Uninstall {
             keep_settings,

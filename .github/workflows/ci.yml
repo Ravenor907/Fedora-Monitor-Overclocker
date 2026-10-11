@@ -1,12 +1,14 @@
 name: CI
 
-# Every push to main (Stable) or testing (test builds) that passes is built and
-# published on the `dist` branch, where install.sh and the app's updater get it.
-# There are no GitHub releases.
+# One branch: main. Every push that passes is built and published on the
+# project's GitHub Pages site (no releases, packages or extra branches):
+# testing/ always gets the new build; stable/ only when VERSION is a Stable
+# version (x.y.z, which only the owner decides). install.sh and the app's
+# updater download from there.
 
 on:
   push:
-    branches: [main, testing]
+    branches: [main]
   pull_request:
 
 permissions:
@@ -40,14 +42,6 @@ jobs:
       - run: .github/scripts/annotate.sh cargo test --no-default-features
       - run: shellcheck install.sh .github/scripts/*.sh
       - run: desktop-file-validate packaging/Install-Monitor-OC.desktop
-      # main carries Stable builds (x.y.z), testing carries test builds (x.y.z.N).
-      - name: Check VERSION for this branch
-        if: github.event_name == 'push'
-        run: |
-          version=$(tr -d '[:space:]' < VERSION)
-          case "$GITHUB_REF_NAME:$version" in
-            main:*.*.*.*) echo "::error file=VERSION::main must carry a Stable version, not $version"; exit 1 ;;
-          esac
 
   build:
     needs: check
@@ -87,43 +81,58 @@ jobs:
           if-no-files-found: error
 
   publish:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
     concurrency:
-      group: publish-dist
+      group: pages
       cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: monitor-oc
           path: new
-      # dist holds stable/ and testing/ in a single commit that is replaced on
-      # every publish, so builds never pile up in the repository's history.
-      - name: Publish to the dist branch
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Assemble the site
         run: |
-          dir=stable
-          [ "$GITHUB_REF_NAME" = testing ] && dir=testing
-          url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          mkdir dist && cd dist
-          git init -q -b dist
-          if git fetch -q --depth 1 "$url" dist 2>/dev/null; then
-            git checkout -q FETCH_HEAD -- . 2>/dev/null || true
-          fi
-          rm -rf "$dir" && mkdir "$dir"
-          cp ../new/* "$dir/"
-          cat > README.md <<'EOF'
-          # Monitor OC builds
-
-          Published by CI from `main` (stable/) and `testing` (testing/). Install with
-          install.sh from the main branch; the app updates itself from here.
-          EOF
-          git add -A
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -q -m "Builds: $dir $(cat "$dir/VERSION") from ${GITHUB_SHA::7}"
-          git push -q -f "$url" HEAD:dist
-          ls -l stable testing 2>/dev/null || true
+          site=$(grep -oP 'pub const SITE: &str = "\K[^"]+' src/update.rs)
+          version=$(tr -d '[:space:]' < new/VERSION)
+          mkdir -p _site/testing _site/stable
+          cp new/* _site/testing/
+          case $version in
+            *.*.*.*)
+              # A test build: keep the Stable build that is live now.
+              for f in VERSION monitor-oc-x86_64 monitor-oc-x86_64.sha256; do
+                curl -fsSL "$site/stable/$f?t=$(date +%s)" -o "_site/stable/$f" || rm -f "_site/stable/$f"
+              done
+              if [ -f _site/stable/VERSION ] && (cd _site/stable && sha256sum -c --status monitor-oc-x86_64.sha256); then
+                echo "Stable stays at $(cat _site/stable/VERSION)"
+              else
+                rm -rf _site/stable
+                echo "Nothing has shipped to Stable yet"
+              fi
+              ;;
+            *) cp new/* _site/stable/ ;;
+          esac
+          printf '<!doctype html><meta charset="utf-8"><title>Monitor OC builds</title>\n<p>Monitor OC builds for install.sh and the app updater. Install: see <a href="https://github.com/%s">the project</a>.</p>\n' "$GITHUB_REPOSITORY" > _site/index.html
+          touch _site/.nojekyll
+          find _site -type f | sort
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4
+      - name: Check what devices will see
+        run: |
+          site=$(grep -oP 'pub const SITE: &str = "\K[^"]+' src/update.rs)
+          sleep 20
+          got=$(curl -fsSL "$site/testing/VERSION?t=$(date +%s)")
+          echo "testing/VERSION at $site: $got"
+          test "$got" = "$(tr -d '[:space:]' < new/VERSION)"

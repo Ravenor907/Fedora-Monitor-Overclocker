@@ -1,16 +1,18 @@
 //! Updates with a Stable and a Testing channel, the same way Ally Hub does it.
 //!
-//! * The `main` branch is **Stable** and `testing` holds the owner's **test
-//!   builds**. There are no GitHub releases: on every push to either branch,
-//!   CI builds the app and publishes it on the `dist` branch, in `stable/` or
-//!   `testing/` (the binary, its `.sha256` and `VERSION`). That branch is one
-//!   commit, replaced each time, so the repository never fills up with builds.
+//! * One branch, `main`. Its `VERSION` decides the channel: a test build
+//!   (x.y.z.N) only reaches **Testing**; a Stable version (x.y.z, only when
+//!   the owner ships) reaches both. There are no releases, packages or extra
+//!   branches: CI publishes each passing push to the project's GitHub Pages
+//!   site, in `testing/` and (Stable versions only) `stable/`, each with the
+//!   binary, its `.sha256` and `VERSION`. The previous Stable build is carried
+//!   over until the next one ships.
 //! * A test build is the Stable version plus a revision: Stable 0.2.0, then
 //!   testing 0.2.0.1, 0.2.0.2, ... (at most [`MAX_TEST_REVISIONS`]). When the
 //!   owner ships, Stable gets the next x.y.z and testing restarts at its .1.
-//! * install.sh installs `dist/stable`. Stable devices only look there;
-//!   devices on Testing take whichever of `stable/` and `testing/` has the
-//!   higher build.
+//! * install.sh installs `stable/` (or `testing/` while nothing has shipped).
+//!   Stable devices only look there; devices on Testing take whichever of
+//!   `stable/` and `testing/` has the higher build.
 //! * Every install keeps the binary it replaces, so a bad build can be rolled
 //!   back: from the app, with `monitor-oc update --rollback`, from the Testing
 //!   Rescue menu entry (plain shell, works when the app won't start), or on
@@ -131,7 +133,7 @@ impl Channel {
         }
     }
 
-    /// Folders on the `dist` branch whose builds this channel installs.
+    /// Folders on the site whose builds this channel installs.
     fn dirs(self) -> &'static [&'static str] {
         match self {
             Channel::Stable => &["stable"],
@@ -163,7 +165,7 @@ impl std::str::FromStr for Channel {
 /// What to tell someone before they switch to Testing.
 pub const TESTING_DISCLAIMER: &[&str] = &[
     "Test builds get new fixes and features first, before the owner has run them long enough to call them stable. They can have bugs.",
-    "Every update keeps the version it replaces. Roll back from Updates, with `monitor-oc update --rollback`, or with Monitor OC Testing Rescue in the app menu (Desktop Mode), which works even when a test build won't open. A build that fails to start three times in a row rolls itself back.",
+    "Every update keeps the version it replaces. Roll back from Settings, with `monitor-oc update --rollback`, or with Monitor OC Testing Rescue in the app menu (Desktop Mode), which works even when a test build won't open. A build that fails to start three times in a row rolls itself back.",
 ];
 
 /// `key=value` lines, the format of monitor-oc's other state files. Later
@@ -190,6 +192,8 @@ pub struct Settings {
     pub channel: Channel,
     /// Install updates on their own when the app starts.
     pub auto: bool,
+    /// Send error reports automatically (needs an access key; see `report`).
+    pub reports: bool,
 }
 
 impl Settings {
@@ -202,6 +206,7 @@ impl Settings {
                 Channel::Stable
             },
             auto: true,
+            reports: false,
         }
     }
 
@@ -213,14 +218,16 @@ impl Settings {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(default.channel),
             auto: last(&pairs, "auto").map_or(default.auto, |v| v != "0" && v != "false"),
+            reports: last(&pairs, "reports").map_or(default.reports, |v| v == "1" || v == "true"),
         }
     }
 
     pub fn render(&self) -> String {
         format!(
-            "channel={}\nauto={}\n",
+            "channel={}\nauto={}\nreports={}\n",
             self.channel.name(),
-            u8::from(self.auto)
+            u8::from(self.auto),
+            u8::from(self.reports)
         )
     }
 }
@@ -380,12 +387,15 @@ fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     result.with_context(|| format!("writing {}", path.display()))
 }
 
-/// The file on the `dist` branch this build updates from.
+/// The file this build updates from.
 pub const ASSET: &str = "monitor-oc-x86_64";
-const DIST: &str = "dist";
+/// Where CI publishes the builds (GitHub Pages, no branch involved).
+pub const SITE: &str = "https://ravenor907.github.io/Monitor-OC";
 
-fn raw_url(at: &str, dir: &str, file: &str) -> String {
-    format!("https://raw.githubusercontent.com/{REPO}/{at}/{dir}/{file}")
+/// A file of the published `dir` (`stable` or `testing`). The query string
+/// skips Pages' cache, so a version and its binary always match.
+fn site_url(dir: &str, file: &str) -> String {
+    format!("{SITE}/{dir}/{file}?t={}", crate::gamescope::now_secs())
 }
 
 /// curl's exit code for an HTTP error such as 404 with `--fail`.
@@ -415,58 +425,23 @@ fn curl(args: &[&str]) -> Result<Fetch> {
     )
 }
 
-/// The commit at the tip of `dist`, so a version and its binary are read
-/// from the same commit (branch URLs are cached for a few minutes). Falls
-/// back to the branch name if the API can't be reached.
-fn dist_commit() -> String {
-    let url = format!("https://api.github.com/repos/{REPO}/git/ref/heads/{DIST}");
-    match curl(&[
-        "--max-time",
-        "20",
-        "-H",
-        "Accept: application/vnd.github+json",
-        &url,
-    ]) {
-        Ok(Fetch::Ok(body)) => {
-            commit_from_ref(&String::from_utf8_lossy(&body)).unwrap_or_else(|| DIST.to_string())
-        }
-        _ => DIST.to_string(),
-    }
-}
-
-/// The 40-hex commit in a GitHub `git/ref` response.
-fn commit_from_ref(json: &str) -> Option<String> {
-    let rest = &json[json.find("\"sha\"")? + 5..];
-    let start = rest.find('"')? + 1;
-    let sha = rest.get(start..start + 40)?;
-    sha.bytes()
-        .all(|b| b.is_ascii_hexdigit())
-        .then(|| sha.to_string())
-}
-
 /// Where a build can be downloaded from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
     pub build: Build,
-    /// `stable` or `testing` on the dist branch.
+    /// `stable` or `testing` on the site.
     pub dir: &'static str,
-    /// The dist commit it was seen at.
-    pub at: String,
 }
 
 /// The build published in `dir`, or None while there is none.
-fn published(at: &str, dir: &'static str) -> Result<Option<Target>> {
-    match curl(&["--max-time", "30", &raw_url(at, dir, "VERSION")])? {
+fn published(dir: &'static str) -> Result<Option<Target>> {
+    match curl(&["--max-time", "30", &site_url(dir, "VERSION")])? {
         Fetch::NotFound => Ok(None),
         Fetch::Ok(body) => {
             let text = String::from_utf8_lossy(&body);
             let build = Build::parse(&text)
                 .with_context(|| format!("the published {dir} build has an unreadable VERSION"))?;
-            Ok(Some(Target {
-                build,
-                dir,
-                at: at.to_string(),
-            }))
+            Ok(Some(Target { build, dir }))
         }
     }
 }
@@ -485,13 +460,12 @@ pub struct Check {
 pub fn check(paths: &Paths, channel: Channel) -> Result<Check> {
     let state = paths.state();
     let current = Build::current();
-    let at = dist_commit();
     let mut found = Vec::new();
     for dir in Channel::Testing.dirs() {
         if !channel.dirs().contains(dir) && *dir != "stable" {
             continue;
         }
-        if let Some(target) = published(&at, dir)? {
+        if let Some(target) = published(dir)? {
             found.push(target);
         }
     }
@@ -544,7 +518,7 @@ fn install_from(paths: &Paths, target: &Target, dir: &Path) -> Result<()> {
     let sums = format!("{ASSET}.sha256");
     for (name, to) in [(ASSET, file.clone()), (sums.as_str(), dir.join(&sums))] {
         let to_str = to.to_str().context("download path is not valid UTF-8")?;
-        let url = raw_url(&target.at, target.dir, name);
+        let url = site_url(target.dir, name);
         match curl(&["--max-time", "600", "-o", to_str, &url])? {
             Fetch::Ok(_) => {}
             Fetch::NotFound => bail!(
@@ -876,7 +850,14 @@ pub fn command(check_only: bool, channel: Option<Channel>, undo: bool) -> Result
         return Ok(());
     }
     println!("Installing {}…", target.build.label());
-    install(&paths, &target)?;
+    if let Err(e) = install(&paths, &target) {
+        crate::report::auto(
+            crate::report::Kind::UpdateFailure,
+            &format!("Update didn't install: {e:#}"),
+            &format!("`monitor-oc update` from {} failed:\n\n{e:#}", label()),
+        );
+        return Err(e);
+    }
     println!(
         "Installed {}. Close and reopen Monitor OC to use it.\n\
          Changed your mind? monitor-oc update --rollback",
@@ -931,6 +912,7 @@ mod tests {
         let s = Settings {
             channel: Channel::Testing,
             auto: false,
+            reports: true,
         };
         assert_eq!(Settings::parse(&s.render(), "0.2.0"), s);
         assert_eq!(
@@ -972,17 +954,6 @@ mod tests {
             pick_newer(cur, &[b("0.2.1"), b("0.2.0.3")], &state),
             Some(b("0.2.1"))
         );
-    }
-
-    #[test]
-    fn dist_commit_from_the_api() {
-        let json = r#"{"ref":"refs/heads/dist","object":{"sha":"0123456789abcdef0123456789abcdef01234567","type":"commit"}}"#;
-        assert_eq!(
-            commit_from_ref(json).as_deref(),
-            Some("0123456789abcdef0123456789abcdef01234567")
-        );
-        assert_eq!(commit_from_ref(r#"{"message":"Not Found"}"#), None);
-        assert_eq!(commit_from_ref(r#"{"sha":"nothex"}"#), None);
     }
 
     #[test]

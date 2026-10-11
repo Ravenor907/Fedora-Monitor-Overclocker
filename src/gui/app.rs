@@ -72,6 +72,8 @@ pub struct App {
     healthy: bool,
     /// A live test of a built-in screen rate in Game Mode.
     panel_test: Option<PanelTest>,
+    /// "Report a problem" being written: the text and the page it came from.
+    report_draft: Option<(String, String)>,
 }
 
 impl App {
@@ -101,6 +103,7 @@ impl App {
             started: Instant::now(),
             healthy: setup.demo,
             panel_test: None,
+            report_draft: None,
             backend,
             events,
             snap: None,
@@ -133,18 +136,20 @@ impl App {
             (Page::External, Icon::Monitor, "External monitors"),
             (Page::Verify, Icon::Stopwatch, "Verify"),
             (Page::Diagnostics, Icon::Pulse, "Diagnostics"),
-            (Page::Updates, Icon::Update, "Updates"),
+            (Page::Settings, Icon::Update, "Settings"),
         ]);
         pages
     }
 
     fn toast(&mut self, ok: bool, text: impl Into<String>) {
+        let text = text.into();
+        crate::report::log(if ok { "app" } else { "app-error" }, &text);
         if self.toasts.len() >= 3 {
             self.toasts.remove(0);
         }
         self.toasts.push(Toast {
             ok,
-            text: text.into(),
+            text,
             at: Instant::now(),
         });
     }
@@ -198,6 +203,17 @@ impl App {
             }
             jobs::Event::Exit(outcome) => {
                 job.outcome = Some(outcome.clone());
+                if let Outcome::Failed(why) = &outcome {
+                    let tail = self.log[self.log.len().saturating_sub(80)..].join("\n");
+                    crate::report::auto(
+                        crate::report::Kind::CommandFailure,
+                        &format!("{} failed: {why}", job.kind.title()),
+                        &format!(
+                            "`{}` failed: {why}\n\nOutput:\n```\n{tail}\n```",
+                            job.kind.command_line()
+                        ),
+                    );
+                }
                 let (ok, text) = outcome_message(job, &outcome);
                 self.toast(ok, text);
                 self.backend.refresh();
@@ -237,6 +253,10 @@ impl App {
                 self.toast(true, "Copied to the clipboard.");
             }
             Action::Update(action) => self.updates.act(action),
+            Action::ReportProblem(page) => {
+                self.report_draft = Some((String::new(), page));
+                self.focus_dialog = true;
+            }
             Action::PanelTest { hz, stock_max } => {
                 if self.panel_test.is_none() {
                     match PanelTest::start(ctx, hz, stock_max, self.setup.demo) {
@@ -491,8 +511,8 @@ impl App {
                 ui.set_width(content_w);
                 self.panel_test_banner(ui);
                 self.job_wait_banner(ui);
-                if self.page == Page::Updates {
-                    updates::show(ui, &self.updates, out);
+                if self.page == Page::Settings {
+                    updates::show(ui, &mut self.updates, out);
                     return;
                 }
                 let Some(snap) = &self.snap else {
@@ -515,7 +535,7 @@ impl App {
                     Page::External => external::show(ui, &mut self.external, &view, out),
                     Page::Verify => verify::show(ui, &mut self.verify, &view),
                     Page::Diagnostics => diagnostics::show(ui, &view, out),
-                    Page::Updates => {}
+                    Page::Settings => {}
                 }
             });
         });
@@ -539,6 +559,10 @@ impl App {
             .is_some_and(|t| t.phase != Phase::Waiting)
         {
             self.panel_test_dialog(ctx);
+            return;
+        }
+        if self.report_draft.is_some() {
+            self.report_dialog(ctx, out);
             return;
         }
         if self.job.as_ref().is_some_and(|j| {
@@ -805,7 +829,14 @@ impl App {
                     ),
                 );
             }
-            panel_test::Outcome::Reverted { hz, why } => {
+            panel_test::Outcome::Reverted { hz, why, failed } => {
+                if failed {
+                    crate::report::auto(
+                        crate::report::Kind::TestFailure,
+                        &format!("Built-in screen test at {hz} Hz failed: {why}"),
+                        &format!("The live test of {hz} Hz went back to stock because {why}."),
+                    );
+                }
                 self.toast(
                     false,
                     format!("Back to stock: {hz} Hz was undone because {why}."),
@@ -813,6 +844,73 @@ impl App {
             }
         }
         self.backend.refresh();
+    }
+
+    /// "Report a problem": what went wrong, in the user's words.
+    fn report_dialog(&mut self, ctx: &egui::Context, out: &mut Vec<Action>) {
+        let p = palette(ctx);
+        let focus = std::mem::take(&mut self.focus_dialog);
+        let Some((text, page)) = self.report_draft.as_mut() else {
+            return;
+        };
+        let mut decision = None;
+        let response = egui::Modal::new(Id::new("report"))
+            .frame(Self::modal_frame(ctx))
+            .backdrop_color(Color32::from_black_alpha(150))
+            .show(ctx, |ui| {
+                ui.set_width(560.0);
+                ui.label(
+                    RichText::new("Report a problem")
+                        .font(bold(22.0))
+                        .color(p.text),
+                );
+                ui.add_space(4.0);
+                dim(
+                    ui,
+                    "What happened, and what did you expect? The diagnostics and recent activity \
+                     are added for you (user and host names taken out).",
+                );
+                if self.setup.game_mode {
+                    faint(ui, "In Game Mode, press STEAM + X for the keyboard.");
+                }
+                ui.add_space(6.0);
+                let edit = ui.add(
+                    egui::TextEdit::multiline(text)
+                        .desired_rows(5)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(
+                            "For example: the screen flickers at 130 Hz after a few minutes",
+                        ),
+                );
+                if focus {
+                    edit.request_focus();
+                }
+                ui.add_space(10.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add_enabled(
+                            !text.trim().is_empty(),
+                            Button::new("Send report", Kind::Primary),
+                        )
+                        .clicked()
+                    {
+                        decision = Some(true);
+                    }
+                    if ui.add(Button::new("Cancel", Kind::Secondary)).clicked() {
+                        decision = Some(false);
+                    }
+                });
+            });
+        if response.should_close() {
+            decision = decision.or(Some(false));
+        }
+        if let Some(send) = decision {
+            let (text, page) = (std::mem::take(text), page.clone());
+            self.report_draft = None;
+            if send {
+                out.push(Action::Update(UpdateAction::Report { text, page }));
+            }
+        }
     }
 
     /// The live test's "keep it?" questions, with the countdown.

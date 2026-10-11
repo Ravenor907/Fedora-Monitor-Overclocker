@@ -57,20 +57,28 @@ Everything is also on the command line: `monitor-oc --help`.
 
 ## Updates
 
-Monitor OC updates itself when it starts (Updates page, or `monitor-oc update`).
+Monitor OC updates itself when it starts (Settings, or `monitor-oc update`). The channel is a setting
+in the app:
 
 | Channel | What you get |
 |---|---|
 | **Stable** (default) | Builds the owner has run and signed off. |
 | **Testing** | New fixes first, numbered Stable + revision (0.2.0.1, 0.2.0.2, ...). Can have bugs. |
 
-Every update keeps the version it replaces: **Roll back** on the Updates page or
+Every update keeps the version it replaces: **Roll back** in Settings or
 `monitor-oc update --rollback`. A build that fails to start three times rolls itself back, and on
 Testing, **Monitor OC Testing Rescue** in the app menu works even if the app won't open.
 
+## Error reports
+
+Like Ally Hub, problems can go straight to the developer as GitHub issues. In Settings, add a GitHub
+access key and turn on **Send error reports automatically** (crashes, failed updates and failed tests),
+or press **Report a problem** (also on Diagnostics, or `monitor-oc report "what happened"`). Reports
+include the diagnostics and recent activity, with your user and host names taken out.
+
 ## Uninstall
 
-Press **Uninstall** on the Updates page, or run `monitor-oc uninstall`. It removes the app, its
+Press **Uninstall** in Settings, or run `monitor-oc uninstall`. It removes the app, its
 menu entries and settings, and the built-in screen goes back to stock. Remove the Steam shortcut
 too if you added one.
 
@@ -79,7 +87,7 @@ too if you added one.
 - [Guide](docs/GUIDE.md): command line, timings, verifying, diagnostics, recovery, supported systems
 - [How it works](docs/HOW-IT-WORKS.md) and building from source
 - [Changelog](docs/CHANGELOG.md) · [Contributing](docs/CONTRIBUTING.md)
-- Found a problem? [Open an issue](https://github.com/Ravenor907/monitor-oc/issues/new/choose)
-  with the output of `monitor-oc doctor`.
+- Found a problem? **Report a problem** in the app, or
+  [open an issue](https://github.com/Ravenor907/monitor-oc/issues/new/choose).
 
 GPL-3.0 · made by [Ravenor907](https://github.com/Ravenor907)

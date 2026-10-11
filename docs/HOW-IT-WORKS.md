@@ -44,7 +44,7 @@ after changing it, regenerate the PNG that Steam uses:
 
 ## Releases
 
-There are no GitHub releases. `main` is Stable and `testing` carries test builds; every push that
-passes CI is built and published on the `dist` branch (`stable/` and `testing/`: the binary, its
-`.sha256` and `VERSION`), replaced in a single commit each time. install.sh and the app's updater
-download from there.
+There is one branch, `main`, and no GitHub releases or packages. Every push to `main` that passes CI is
+built and published on the project's GitHub Pages site: `testing/` always gets the new build, `stable/`
+only when `VERSION` is a Stable version (x.y.z). Each folder holds the binary, its `.sha256` and `VERSION`.
+install.sh and the app's updater download from there; the Stable / Testing choice is a setting in the app.

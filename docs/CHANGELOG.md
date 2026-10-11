@@ -6,7 +6,7 @@
   the screen) in Game Mode on the ROG Ally X and other 1080p handhelds.
 - **Controller support in Game Mode.** D-pad or left stick moves between controls, A presses, B closes a
   dialog, LB/RB switch pages. No Steam Input layout needed.
-- **Updates page with Stable and Testing channels.** Monitor OC can update itself, keeps the version it
+- **Settings page with Stable and Testing channels.** Monitor OC can update itself, keeps the version it
   replaces, and can roll back. Test builds get fixes first; a test build that fails to start three times
   rolls itself back, and "Monitor OC Testing Rescue" in the app menu can roll back, return to Stable or
   uninstall even when a test build won't open.
@@ -17,6 +17,11 @@
   it at the stock rate even if it is picked in Quick Access, and a watchdog restarts Game Mode on stock if
   the app dies mid-test.
 - External monitor tests use the same 10 seconds plus a double check after 5 minutes.
+- **Error reports like Ally Hub.** With a GitHub access key in Settings, crashes, failed updates and failed
+  tests can be reported automatically, and **Report a problem** sends your own description with the
+  diagnostics. Also `monitor-oc report`.
+- Builds are no longer GitHub releases: install.sh and updates download them from the project's site, and
+  Stable or Testing is chosen in the app.
 - **Uninstall fixed.** `monitor-oc uninstall` (and the install script's `--uninstall`) now removes everything,
   including the Game Mode profile and settings (`--keep-settings` to keep them), takes care of external
   monitor overrides through a password prompt, and the app has an Uninstall button.

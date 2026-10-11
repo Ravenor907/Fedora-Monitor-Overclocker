@@ -33,8 +33,8 @@ pub enum Page {
     Verify,
     /// `monitor-oc doctor`.
     Diagnostics,
-    /// Update channel, installing updates and rolling back.
-    Updates,
+    /// Updates, error reports and uninstalling.
+    Settings,
 }
 
 #[derive(Default)]
