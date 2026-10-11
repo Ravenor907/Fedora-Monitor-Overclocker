@@ -160,6 +160,9 @@ fn trial_banner(ui: &mut Ui, info: &PanelInfo, s: &Settings, view: &View, out: &
                 if button(ui, "Discard", Kind::Secondary).clicked() {
                     out.push(Action::Panel(PanelAction::Discard));
                 }
+                if button(ui, "Verify  →", Kind::Ghost).clicked() {
+                    out.push(Action::Verify(hz));
+                }
             });
         }),
         TrialState::Expired => banner(ui, p.warn, |ui| {
