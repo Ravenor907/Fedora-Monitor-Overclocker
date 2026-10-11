@@ -3,6 +3,6 @@ Type=Application
 Name=Install Monitor OC
 Comment=Download Monitor OC and add it to your app menu (no sudo needed)
 Icon=system-software-install
-Exec=sh -c "curl -fsSL https://raw.githubusercontent.com/Ravenor907/Fedora-Monitor-Overclocker/main/install.sh | sh; echo; echo Press Enter to close this window.; read -r _"
+Exec=sh -c "curl -fsSL https://raw.githubusercontent.com/Ravenor907/monitor-oc/main/install.sh | sh; echo; echo Press Enter to close this window.; read -r _"
 Terminal=true
 StartupNotify=false
